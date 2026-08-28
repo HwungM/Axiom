@@ -6,6 +6,7 @@ const channelEnvironment = Object.freeze({
   alerts: 'DISCORD_WEBHOOK_ALERTS',
   dailyReports: 'DISCORD_WEBHOOK_DAILY_REPORTS',
   caseStudies: 'DISCORD_WEBHOOK_CASE_STUDIES',
+  pnl: 'DISCORD_WEBHOOK_PNL',
 });
 
 export const discordChannels = Object.freeze(Object.keys(channelEnvironment));

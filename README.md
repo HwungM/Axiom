@@ -40,7 +40,7 @@ Stop it with `Ctrl+C`. Runtime data remains local under `data/` and is intention
 
 ## Discord control room
 
-Seven destinations are supported: bot status, migration feed, decision log, paper trades, alerts, daily reports and case studies. Webhook URLs are credentials and belong only in the ignored `.env` file.
+Eight destinations are supported: bot status, migration feed, decision log, paper trades, alerts, daily reports, case studies and a close-only PnL feed. Webhook URLs are credentials and belong only in the ignored `.env` file.
 
 After regenerating the webhooks in Discord, copy `.env.example` to `.env`, paste the replacement URLs there, then validate without sending anything:
 

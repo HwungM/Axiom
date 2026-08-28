@@ -1,8 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import fs from 'node:fs/promises';
 import { discordChannels, discordConfiguration, validateWebhookUrl } from '../src/lib/discord.mjs';
 
-test('the seven agreed Discord destinations are stable', () => {
+test('the eight agreed Discord destinations are stable', () => {
   assert.deepEqual(discordChannels, [
     'botStatus',
     'migrationFeed',
@@ -11,6 +12,7 @@ test('the seven agreed Discord destinations are stable', () => {
     'alerts',
     'dailyReports',
     'caseStudies',
+    'pnl',
   ]);
 });
 
@@ -24,4 +26,11 @@ test('configuration reports missing secrets without exposing them', () => {
   const configuration = discordConfiguration({});
   assert.equal(Object.values(configuration).every((entry) => entry.reason === 'missing'), true);
   assert.equal(JSON.stringify(configuration).includes('/api/webhooks/'), false);
+});
+
+test('PnL notifications are close-only for baseline and size shadows', async () => {
+  const source = await fs.readFile(new URL('../src/paper-engine.mjs', import.meta.url), 'utf8');
+  const openSection = source.slice(source.indexOf('async openPosition'), source.indexOf('mark(position)'));
+  assert.equal(openSection.includes("postDiscord('pnl'"), false);
+  assert.equal(source.match(/postDiscord\('pnl'/g)?.length, 2);
 });

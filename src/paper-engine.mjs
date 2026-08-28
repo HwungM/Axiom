@@ -436,6 +436,18 @@ export class PaperEngine {
         { name: 'Matched baseline signal', value: `0.5 SOL · ${position.entryIso}` },
       ],
     }).catch((error) => this.options.onError?.(error));
+    void postDiscord('pnl', {
+      title: `${position.sizeSol} SOL SHADOW PNL`,
+      description: `${position.symbol ?? position.mint.slice(0, 8)} closed · ${reason}`,
+      color: won ? 0x45e6b0 : 0xff5d73,
+      fields: [
+        { name: 'Trade PnL', value: `${result.pnlSol >= 0 ? '+' : ''}${formatSol(result.pnlSol)}`, inline: true },
+        { name: 'Cumulative PnL', value: `${cohort.realizedPnlSol >= 0 ? '+' : ''}${formatSol(cohort.realizedPnlSol)}`, inline: true },
+        { name: 'Return', value: `${result.returnPct >= 0 ? '+' : ''}${result.returnPct.toFixed(2)}%`, inline: true },
+        { name: 'Record', value: `${cohort.wins}W · ${cohort.losses}L`, inline: true },
+        { name: 'Completed', value: String(cohort.completedTrades), inline: true },
+      ],
+    }).catch((error) => this.options.onError?.(error));
   }
 
   async closePosition(position, timestamp, reason, source, mark = this.mark(position)) {
@@ -474,6 +486,18 @@ export class PaperEngine {
         { name: 'Hold', value: `${result.holdSeconds}s`, inline: true },
         { name: 'Bankroll', value: formatSol(result.bankrollSol), inline: true },
         { name: 'External swaps replayed', value: String(result.externalSwaps), inline: true },
+      ],
+    }).catch((error) => this.options.onError?.(error));
+    void postDiscord('pnl', {
+      title: '0.5 SOL BASELINE PNL',
+      description: `${position.symbol ?? position.mint.slice(0, 8)} closed · ${reason}`,
+      color: won ? 0x45e6b0 : 0xff5d73,
+      fields: [
+        { name: 'Trade PnL', value: `${result.pnlSol >= 0 ? '+' : ''}${formatSol(result.pnlSol)}`, inline: true },
+        { name: 'Cumulative PnL', value: `${this.state.realizedPnlSol >= 0 ? '+' : ''}${formatSol(this.state.realizedPnlSol)}`, inline: true },
+        { name: 'Return', value: `${result.returnPct >= 0 ? '+' : ''}${result.returnPct.toFixed(2)}%`, inline: true },
+        { name: 'Record', value: `${this.state.wins}W · ${this.state.losses}L`, inline: true },
+        { name: 'Completed', value: String(this.state.completedTrades), inline: true },
       ],
     }).catch((error) => this.options.onError?.(error));
     void postDiscord('caseStudies', {

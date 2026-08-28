@@ -12,6 +12,5 @@ if (rows.some((row) => row.status !== 'READY')) {
   console.error('Discord is not ready. Add newly regenerated webhook URLs to .env. Nothing was transmitted.');
   process.exitCode = 1;
 } else {
-  console.log('All seven Discord destinations are configured. Nothing was transmitted.');
+  console.log(`All ${rows.length} Discord destinations are configured. Nothing was transmitted.`);
 }
-
