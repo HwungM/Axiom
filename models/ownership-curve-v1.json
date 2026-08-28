@@ -1,0 +1,38 @@
+{
+  "version": "ownership-curve-v1",
+  "features": [
+    "age_seconds",
+    "curve_close",
+    "initial_holder_count",
+    "initial_top1_pct_corrected",
+    "initial_top5_pct_corrected",
+    "initial_top10_pct_corrected",
+    "dev_buy_pct_corrected",
+    "initial_gini"
+  ],
+  "threshold": 0.027644479879636794,
+  "baseGate": {
+    "ageSeconds": [
+      8,
+      180
+    ],
+    "curvePct": [
+      35,
+      82
+    ],
+    "minimumBuys2s": 3,
+    "minimumBuySol5s": 1.0,
+    "return5s": [
+      -0.2,
+      0.8
+    ]
+  },
+  "paperExecution": {
+    "sizeSol": 0.5,
+    "takeProfit": 0.4,
+    "stopLoss": -0.25,
+    "maxHoldSeconds": 20,
+    "maxPositions": 3
+  },
+  "researchOnly": true
+}

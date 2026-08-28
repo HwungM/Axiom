@@ -114,6 +114,11 @@ export class LiveChain {
       return;
     }
     const logs = notification.value?.logs ?? [];
+    if (this.handlers.onPumpTrade) {
+      for (const event of this.decoders.decodePumpTradeEvents(notification, received)) {
+        await this.handlers.onPumpTrade(event);
+      }
+    }
     if (!logs.some((log) => /Program log: Instruction: Migrate(?:V2)?$/i.test(log))) return;
     const signature = notification.value.signature;
     const migration = await this.decoders.resolveMigration(signature, received);

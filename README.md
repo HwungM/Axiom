@@ -92,3 +92,18 @@ The monitor posts startup/shutdown/heartbeat status, exact migration events, eve
 The selector must be frozen before outcomes are scored. Development, validation and untouched forward holdout results remain separate.
 
 Migration pools are permanently deduplicated. `npm run paper:reconcile` rebuilds headline PnL from the first decision per pool and refuses to run while a position is open.
+
+## OQCA bonding-curve track
+
+`Ownership-Quality Curve Anticipation v1` is a separate historical survivor, not a replacement for the running migration collector. It watches the pre-migration Pump bonding curve, applies a minimal activity gate, and scores the launch-time top-holder structure that slower manual traders inspect in a holder panel. Its full methodology, rejected alternatives, latency stress and promotion gate are in [the OQCA method note](docs/ownership-curve-method-v1.md).
+
+The process has no transaction-signing or live-order code. It maintains independent 3 SOL paper accounts at measured 670ms and 1,170ms delays. It refuses to start without a holder-capable RPC because the trade-event-only ownership fallback failed validation and guessed holder values would invalidate the model.
+
+Set a dedicated development RPC URL in ignored `.env`:
+
+```powershell
+$env:OWNERSHIP_RPC_URL='https://mainnet.helius-rpc.com/?api-key=YOUR_FREE_KEY'
+npm run paper:ownership
+```
+
+Runtime output is append-only under `data/ownership-v1/`. This track must collect at least 200 current signals and pass both latency accounts before it can be considered anything more than a historical candidate.

@@ -9,6 +9,28 @@ const endpoints = [
 
 let cursor = 0;
 
+export async function solanaRpcAt(endpoint, method, params, attempts = 4) {
+  let lastError;
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    try {
+      const response = await fetch(endpoint, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ jsonrpc: '2.0', id: 1, method, params }),
+        signal: AbortSignal.timeout(15_000),
+      });
+      if (!response.ok) throw new Error(`RPC HTTP ${response.status}`);
+      const payload = await response.json();
+      if (payload.error) throw new Error(`RPC ${payload.error.code}: ${payload.error.message}`);
+      return payload.result;
+    } catch (error) {
+      lastError = error;
+      if (attempt < attempts - 1) await sleep(Math.min(2_500, 200 * 2 ** attempt));
+    }
+  }
+  throw lastError;
+}
+
 export async function solanaRpc(method, params, attempts = 7) {
   let lastError;
   for (let attempt = 0; attempt < attempts; attempt += 1) {
@@ -44,4 +66,3 @@ export async function getConfirmedTransaction(signature) {
   }
   throw new Error(`Confirmed transaction unavailable: ${signature}`);
 }
-
