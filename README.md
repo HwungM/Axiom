@@ -6,6 +6,8 @@ An append-only research harness for discovering and forward-testing Solana memec
 
 `paper-v1-canonical-migrations` is the first frozen forward hypothesis. A live Solana WebSocket watches Pump migrations and PumpSwap events, records every decision, and maintains a counterfactual 3 SOL paper account.
 
+The official baseline remains fixed at 0.5 SOL. Every baseline entry also starts matched 1.0, 1.5 and 2.0 SOL size shadows from the identical decision-time pool state. Each shadow pays its own modeled price impact and exits independently at its own take-profit, stop-loss or timeout. These are unconstrained comparison cohorts—not recommendations to fund those sizes from the 3 SOL baseline wallet.
+
 Agreed experimental account:
 
 - starting bankroll: 3 SOL
@@ -25,6 +27,7 @@ Copy-Item .env.example .env
 npm test
 npm run capture
 npm run report
+npm run paper:shadow-report
 ```
 
 For continuous collection:
@@ -59,6 +62,8 @@ The monitor posts startup/shutdown/heartbeat status, exact migration events, eve
 - `data/events/first-seen-pools.jsonl` — one immutable first observation per pool
 - `data/events/canonical-migrations.jsonl` — first observations confirmed by Pump as the canonical migrated pool
 - `data/state.json` — deduplication state; deleting this starts a new corpus
+- `data/paper/size-shadow-state.json` — current matched size-cohort totals and open positions
+- `data/paper/size-shadow-entries.jsonl` / `size-shadow-exits.jsonl` — append-only independent paths for the 1.0, 1.5 and 2.0 SOL cohorts
 
 ## Research tracks
 

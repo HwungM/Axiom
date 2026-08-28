@@ -23,6 +23,14 @@ test('paper v1 is enabled with the frozen first forward selector', () => {
   assert.equal(livePaperConfig.execution.chargeOwnPoolImpact, true);
 });
 
+test('paper v1 preserves the 0.5 SOL baseline and declares matched size shadows', () => {
+  assert.equal(livePaperConfig.positionSizeSol, 0.5);
+  assert.deepEqual(livePaperConfig.shadowPositionSizesSol, [1, 1.5, 2]);
+  assert.equal(livePaperConfig.shadowComparison.minimumCompletedTrades, 50);
+  assert.equal(livePaperConfig.shadowComparison.targetCompletedTrades, 100);
+  assert.equal(livePaperConfig.shadowComparison.mode, 'matched-signals-unconstrained-capital');
+});
+
 test('paper v0 does not invent an unfinished selection rule', () => {
   assert.equal(config.frozen, true);
   assert.equal(config.selector.canonicalPumpMigration, true);

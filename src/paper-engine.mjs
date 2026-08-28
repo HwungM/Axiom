@@ -45,6 +45,11 @@ export class PaperEngine {
     this.config = config;
     this.dataRoot = path.resolve(process.env.DATA_ROOT ?? 'data');
     this.stateFile = path.join(this.dataRoot, 'paper', 'state.json');
+    this.shadowStateFile = path.join(this.dataRoot, 'paper', 'size-shadow-state.json');
+    this.shadowSizes = [...new Set(config.shadowPositionSizesSol ?? [])]
+      .map(Number)
+      .filter((size) => Number.isFinite(size) && size > 0 && size !== config.positionSizeSol)
+      .sort((a, b) => a - b);
     this.candidates = new Map();
     this.preMigrationEvents = new Map();
     this.options = options;
@@ -70,10 +75,37 @@ export class PaperEngine {
     });
     this.state.invalidatedTrades ??= 0;
     this.state.seenMigrations ??= {};
+    this.shadowState = await readJson(this.shadowStateFile, {
+      version: `${this.config.version}-size-shadows-v1`,
+      startedAt: Date.now(),
+      baselineSizeSol: this.config.positionSizeSol,
+      matchedSignals: 0,
+      cohorts: {},
+    });
+    this.shadowState.cohorts ??= {};
+    this.shadowState.matchedSignals ??= 0;
+    for (const sizeSol of this.shadowSizes) {
+      const key = String(sizeSol);
+      this.shadowState.cohorts[key] ??= {
+        sizeSol,
+        realizedPnlSol: 0,
+        completedTrades: 0,
+        wins: 0,
+        losses: 0,
+        invalidatedTrades: 0,
+        openPositions: {},
+      };
+      this.shadowState.cohorts[key].openPositions ??= {};
+      this.shadowState.cohorts[key].invalidatedTrades ??= 0;
+    }
     if (Object.keys(this.state.openPositions).length > 0) {
       await this.invalidateOpenPositions('PROCESS_RESTART_DATA_GAP');
     }
+    if (this.shadowOpenPositionCount() > 0) {
+      await this.invalidateShadowOpenPositions('PROCESS_RESTART_DATA_GAP');
+    }
     await this.persist();
+    await this.persistShadows();
     this.timer = setInterval(() => this.tick().catch((error) => this.options.onError?.(error)), 1_000);
     this.timer.unref();
   }
@@ -82,6 +114,30 @@ export class PaperEngine {
     this.state.updatedAt = Date.now();
     this.state.updatedIso = new Date(this.state.updatedAt).toISOString();
     await writeJsonAtomic(this.stateFile, this.state);
+  }
+
+  async persistShadows() {
+    this.shadowState.updatedAt = Date.now();
+    this.shadowState.updatedIso = new Date(this.shadowState.updatedAt).toISOString();
+    await writeJsonAtomic(this.shadowStateFile, this.shadowState);
+  }
+
+  shadowCohorts() {
+    return Object.values(this.shadowState?.cohorts ?? {}).sort((a, b) => a.sizeSol - b.sizeSol);
+  }
+
+  shadowOpenPositionCount() {
+    return this.shadowCohorts()
+      .reduce((total, cohort) => total + Object.keys(cohort.openPositions ?? {}).length, 0);
+  }
+
+  shadowPositionsForPool(pool) {
+    const positions = [];
+    for (const cohort of this.shadowCohorts()) {
+      const position = cohort.openPositions?.[pool];
+      if (position) positions.push({ cohort, position });
+    }
+    return positions;
   }
 
   async onMigration(migration) {
@@ -133,11 +189,20 @@ export class PaperEngine {
       position.externalSwaps += 1;
       await this.evaluate(position, event.timestamp, 'swap');
     }
+    const shadowPositions = this.shadowPositionsForPool(event.pool);
+    for (const { cohort, position: shadow } of shadowPositions) {
+      if (event.timestamp < shadow.entryTimestamp) continue;
+      relevant = true;
+      applyExternalSwap(shadow.poolState, event, this.config.poolFeeRate);
+      shadow.lastSwapTimestamp = event.timestamp;
+      shadow.externalSwaps += 1;
+      await this.evaluateShadow(cohort, shadow, event.timestamp, 'swap');
+    }
     const candidate = this.candidates.get(event.pool);
     if (candidate && !candidate.decided) {
       relevant = true;
       this.observeCandidate(candidate, event);
-    } else if (!candidate && !position) {
+    } else if (!candidate && !position && shadowPositions.length === 0) {
       const rows = this.preMigrationEvents.get(event.pool) ?? [];
       rows.push(event);
       this.preMigrationEvents.set(event.pool, rows.slice(-10));
@@ -223,7 +288,8 @@ export class PaperEngine {
   }
 
   async openPosition(candidate, decision) {
-    const poolState = { ...candidate.actualState };
+    const decisionState = { ...candidate.actualState };
+    const poolState = { ...decisionState };
     const tokens = buy(poolState, this.config.positionSizeSol, this.config.poolFeeRate);
     const entryTimestamp = Math.max(Math.floor(Date.now() / 1_000), candidate.migrationTime + this.config.observationWindowSeconds);
     const position = {
@@ -245,8 +311,13 @@ export class PaperEngine {
     };
     this.state.availableBankrollSol -= this.config.positionSizeSol + this.config.fixedCostPerTransactionSol;
     this.state.openPositions[candidate.pool] = position;
+    const shadowEntries = this.openShadowPositions(candidate, decision, decisionState, entryTimestamp);
     await appendJsonl(path.join(this.dataRoot, 'paper', 'entries.jsonl'), position);
+    for (const shadow of shadowEntries) {
+      await appendJsonl(path.join(this.dataRoot, 'paper', 'size-shadow-entries.jsonl'), shadow);
+    }
     await this.persist();
+    await this.persistShadows();
     void postDiscord('paperTrades', {
       title: `PAPER ENTRY: ${candidate.symbol ?? candidate.mint.slice(0, 8)}`,
       description: 'Counterfactual position entered using the exact observed pool state plus our own modeled price impact.',
@@ -255,10 +326,42 @@ export class PaperEngine {
         { name: 'Size', value: formatSol(position.sizeSol), inline: true },
         { name: 'Bankroll available', value: formatSol(this.state.availableBankrollSol), inline: true },
         { name: 'Opening reserve', value: formatSol(position.entryQuoteReserveSol), inline: true },
+        { name: 'Matched size shadows', value: this.shadowSizes.map((size) => `${size} SOL`).join(' · ') || 'Disabled' },
         { name: 'Exit plan', value: `TP +${this.config.takeProfitPct}% · SL −${this.config.stopLossPct}% · ${this.config.timeoutSeconds}s timeout` },
         { name: 'Mint', value: `\`${candidate.mint}\`` },
       ],
     }).catch((error) => this.options.onError?.(error));
+  }
+
+  openShadowPositions(candidate, decision, decisionState, entryTimestamp) {
+    const entries = [];
+    this.shadowState.matchedSignals += 1;
+    for (const sizeSol of this.shadowSizes) {
+      const cohort = this.shadowState.cohorts[String(sizeSol)];
+      const poolState = { ...decisionState };
+      const tokens = buy(poolState, sizeSol, this.config.poolFeeRate);
+      const position = {
+        id: `${candidate.pool}:${entryTimestamp}:shadow:${sizeSol}`,
+        cohort: `${sizeSol}-SOL`,
+        pool: candidate.pool,
+        mint: candidate.mint,
+        name: candidate.name,
+        symbol: candidate.symbol,
+        entryTimestamp,
+        entryIso: new Date(entryTimestamp * 1_000).toISOString(),
+        sizeSol,
+        tokens,
+        poolState,
+        entryQuoteReserveSol: decision.quoteReserveSol,
+        entryAveragePriceSol: sizeSol / tokens,
+        externalSwaps: 0,
+        lastSwapTimestamp: entryTimestamp,
+        status: 'OPEN',
+      };
+      cohort.openPositions[candidate.pool] = position;
+      entries.push(position);
+    }
+    return entries;
   }
 
   mark(position) {
@@ -277,6 +380,62 @@ export class PaperEngine {
     else if (mark.returnPct <= -this.config.stopLossPct) reason = 'STOP_LOSS';
     else if (ageSeconds >= this.config.timeoutSeconds) reason = 'TIMEOUT';
     if (reason) await this.closePosition(position, timestamp, reason, source, mark);
+  }
+
+  markShadow(position) {
+    const state = { ...position.poolState };
+    const proceeds = sell(state, position.tokens, this.config.poolFeeRate);
+    const pnlSol = proceeds - position.sizeSol - 2 * this.config.fixedCostPerTransactionSol;
+    return { proceeds, pnlSol, returnPct: 100 * pnlSol / position.sizeSol };
+  }
+
+  async evaluateShadow(cohort, position, timestamp, source) {
+    if (position.closing) return;
+    const mark = this.markShadow(position);
+    const ageSeconds = timestamp - position.entryTimestamp;
+    let reason = null;
+    if (mark.returnPct >= this.config.takeProfitPct) reason = 'TAKE_PROFIT';
+    else if (mark.returnPct <= -this.config.stopLossPct) reason = 'STOP_LOSS';
+    else if (ageSeconds >= this.config.timeoutSeconds) reason = 'TIMEOUT';
+    if (reason) await this.closeShadowPosition(cohort, position, timestamp, reason, source, mark);
+  }
+
+  async closeShadowPosition(cohort, position, timestamp, reason, source, mark = this.markShadow(position)) {
+    position.closing = true;
+    cohort.realizedPnlSol += mark.pnlSol;
+    cohort.completedTrades += 1;
+    cohort[mark.pnlSol > 0 ? 'wins' : 'losses'] += 1;
+    delete cohort.openPositions[position.pool];
+    const result = {
+      ...position,
+      poolState: undefined,
+      tokens: round(position.tokens),
+      status: 'CLOSED',
+      exitTimestamp: timestamp,
+      exitIso: new Date(timestamp * 1_000).toISOString(),
+      exitReason: reason,
+      exitSource: source,
+      holdSeconds: timestamp - position.entryTimestamp,
+      grossProceedsSol: round(mark.proceeds),
+      pnlSol: round(mark.pnlSol),
+      returnPct: round(mark.returnPct, 3),
+      cohortRealizedPnlSol: round(cohort.realizedPnlSol),
+    };
+    await appendJsonl(path.join(this.dataRoot, 'paper', 'size-shadow-exits.jsonl'), result);
+    await this.persistShadows();
+    const won = result.pnlSol > 0;
+    void postDiscord('paperTrades', {
+      title: `SIZE SHADOW ${position.sizeSol} SOL: ${position.symbol ?? position.mint.slice(0, 8)} · ${reason}`,
+      description: 'Matched-signal shadow closed using its own fill, price impact and exit threshold.',
+      color: won ? 0x45e6b0 : 0xff5d73,
+      fields: [
+        { name: 'Net PnL', value: `${result.pnlSol >= 0 ? '+' : ''}${formatSol(result.pnlSol)}`, inline: true },
+        { name: 'Return', value: `${result.returnPct >= 0 ? '+' : ''}${result.returnPct.toFixed(2)}%`, inline: true },
+        { name: 'Hold', value: `${result.holdSeconds}s`, inline: true },
+        { name: 'Cohort total', value: `${result.cohortRealizedPnlSol >= 0 ? '+' : ''}${formatSol(result.cohortRealizedPnlSol)}`, inline: true },
+        { name: 'Matched baseline signal', value: `0.5 SOL · ${position.entryIso}` },
+      ],
+    }).catch((error) => this.options.onError?.(error));
   }
 
   async closePosition(position, timestamp, reason, source, mark = this.mark(position)) {
@@ -335,6 +494,9 @@ export class PaperEngine {
   async tick() {
     const now = Math.floor(Date.now() / 1_000);
     for (const position of Object.values(this.state.openPositions)) await this.evaluate(position, now, 'clock');
+    for (const cohort of this.shadowCohorts()) {
+      for (const position of Object.values(cohort.openPositions)) await this.evaluateShadow(cohort, position, now, 'clock');
+    }
     const date = new Date().toISOString().slice(0, 10);
     if (new Date().getUTCHours() === 0 && this.lastDailyReportDate !== date) {
       this.lastDailyReportDate = date;
@@ -345,6 +507,10 @@ export class PaperEngine {
   async sendDailyReport() {
     const completed = this.state.completedTrades;
     const winRate = completed ? 100 * this.state.wins / completed : 0;
+    const shadowFields = this.shadowCohorts().map((cohort) => ({
+      name: `${cohort.sizeSol} SOL shadow`,
+      value: `${cohort.completedTrades} closed · ${cohort.realizedPnlSol >= 0 ? '+' : ''}${cohort.realizedPnlSol.toFixed(4)} SOL · ${Object.keys(cohort.openPositions).length} open`,
+    }));
     await postDiscord('dailyReports', {
       title: 'Paper account report',
       description: `Frozen strategy: ${this.config.version}`,
@@ -357,6 +523,7 @@ export class PaperEngine {
         { name: 'Win rate', value: `${winRate.toFixed(1)}%`, inline: true },
         { name: 'Decisions', value: `${this.state.entered} entered · ${this.state.skipped} skipped` },
         { name: 'Invalidated by data gaps', value: String(this.state.invalidatedTrades) },
+        ...shadowFields,
       ],
     });
   }
@@ -371,6 +538,12 @@ export class PaperEngine {
       completedTrades: this.state.completedTrades,
       decisions: this.state.decisions,
       invalidatedTrades: this.state.invalidatedTrades,
+      sizeShadows: this.shadowCohorts().map((cohort) => ({
+        sizeSol: cohort.sizeSol,
+        realizedPnlSol: round(cohort.realizedPnlSol),
+        openPositions: Object.keys(cohort.openPositions).length,
+        completedTrades: cohort.completedTrades,
+      })),
     };
   }
 
@@ -400,6 +573,34 @@ export class PaperEngine {
       }).catch(() => {});
     }
     await this.persist();
+  }
+
+  async invalidateShadowOpenPositions(reason) {
+    const invalidated = [];
+    for (const cohort of this.shadowCohorts()) {
+      for (const position of Object.values(cohort.openPositions)) {
+        cohort.invalidatedTrades += 1;
+        const row = {
+          ...position,
+          poolState: undefined,
+          tokens: round(position.tokens),
+          status: 'INVALIDATED',
+          invalidatedAt: Date.now(),
+          reason,
+        };
+        await appendJsonl(path.join(this.dataRoot, 'paper', 'size-shadow-invalidated.jsonl'), row);
+        delete cohort.openPositions[position.pool];
+        invalidated.push(row);
+      }
+    }
+    if (invalidated.length === 0) return;
+    await this.persistShadows();
+    void postDiscord('alerts', {
+      title: `${invalidated.length} size-shadow trade(s) invalidated`,
+      description: 'Their complete event paths were unavailable, so they are excluded from the matched size comparison.',
+      color: 0xffc857,
+      fields: [{ name: 'Reason', value: reason }],
+    }).catch(() => {});
   }
 
   stop() {

@@ -12,6 +12,7 @@
     "discord:smoke": "node --env-file=.env src/discord-smoke.mjs",
     "paper:reconcile": "node --env-file=.env src/reconcile-paper.mjs",
     "paper:size-sweep": "node --env-file=.env src/analyze-size-sweep.mjs",
+    "paper:shadow-report": "node --env-file=.env src/report-size-shadows.mjs",
     "test": "node --test"
   },
   "engines": {

@@ -4,6 +4,12 @@
   "frozen": true,
   "startingBankrollSol": 3,
   "positionSizeSol": 0.5,
+  "shadowPositionSizesSol": [1, 1.5, 2],
+  "shadowComparison": {
+    "minimumCompletedTrades": 50,
+    "targetCompletedTrades": 100,
+    "mode": "matched-signals-unconstrained-capital"
+  },
   "maxConcurrentPositions": 3,
   "observationWindowSeconds": 5,
   "takeProfitPct": 50,
