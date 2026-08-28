@@ -398,10 +398,12 @@ export class PaperEngine {
         { name: 'Exit', value: result.exitIso, inline: true },
         { name: 'Entry average-fill MC', value: formatMarketCap(position.entryMarketCapUsd, position.entryMarketCapSol), inline: true },
         { name: 'Exit average-fill MC', value: formatMarketCap(result.exitMarketCapUsd, result.exitMarketCapSol), inline: true },
+        { name: 'Observed spot MC before entry', value: formatMarketCap(position.entrySpotMarketCapUsd, position.entrySpotMarketCapSol), inline: true },
+        { name: 'Observed spot MC before exit', value: formatMarketCap(result.exitSpotMarketCapUsd, result.exitSpotMarketCapSol), inline: true },
         { name: 'Outcome', value: `${result.pnlSol >= 0 ? '+' : ''}${result.pnlSol.toFixed(4)} SOL (${result.returnPct.toFixed(2)}%)` },
         { name: 'Execution evidence', value: `Entry after slot ${position.entrySlot} · ${position.simulatedLandingDelayMs}ms modeled delay · ${position.externalSwaps} later swaps` },
-        { name: 'MC method', value: Number.isFinite(position.solUsdAtEntry)
-          ? `Average executable fill × supply × $${Number(position.solUsdAtEntry).toFixed(2)}/SOL`
+        { name: 'MC method', value: Number.isFinite(position.solUsdAtEntry) && Number.isFinite(result.solUsdAtExit)
+          ? `Average executable fill × supply · SOL/USD entry $${Number(position.solUsdAtEntry).toFixed(2)}, exit $${Number(result.solUsdAtExit).toFixed(2)}`
           : 'Average executable fill × supply (SOL-denominated; USD conversion unavailable)' },
         { name: 'Method version', value: this.config.version },
       ],

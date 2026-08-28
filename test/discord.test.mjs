@@ -40,6 +40,8 @@ test('closed-trade case studies expose auditable entry and exit market caps', as
   const caseStudySection = source.slice(source.indexOf("postDiscord('caseStudies'"), source.indexOf('async closeShadowPosition'));
   assert.match(caseStudySection, /Entry average-fill MC/);
   assert.match(caseStudySection, /Exit average-fill MC/);
+  assert.match(caseStudySection, /Observed spot MC before entry/);
+  assert.match(caseStudySection, /Observed spot MC before exit/);
   assert.match(caseStudySection, /Execution evidence/);
   assert.match(caseStudySection, /MC method/);
 });
