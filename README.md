@@ -40,7 +40,10 @@ npm run capture
 npm run report
 npm run paper:shadow-report
 npm run paper:latency-report
+npm run paper:skipped-report
 ```
+
+`paper:skipped-report` counterfactually replays rejected signals without changing either account. It only scores a skipped trade when the captured event tape contains an authoritative post-target entry state and enough forward data to model the configured exit; unobservable skips remain unscored.
 
 For continuous collection:
 
