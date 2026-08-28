@@ -35,6 +35,24 @@ npm run monitor
 
 Stop it with `Ctrl+C`. Runtime data remains local under `data/` and is intentionally excluded from Git because it will become large.
 
+## Discord control room
+
+Seven destinations are supported: bot status, migration feed, decision log, paper trades, alerts, daily reports and case studies. Webhook URLs are credentials and belong only in the ignored `.env` file.
+
+After regenerating the webhooks in Discord, copy `.env.example` to `.env`, paste the replacement URLs there, then validate without sending anything:
+
+```powershell
+npm run discord:check
+```
+
+An intentionally guarded smoke test can send one clearly labeled connection message to each channel:
+
+```powershell
+npm run discord:smoke -- --send
+```
+
+The monitor currently posts startup/shutdown/heartbeat status, collection failures and newly detected canonical migrations. Decision, paper-trade and case-study messages will activate only when those corresponding engines are implemented; they will not receive fabricated placeholder events.
+
 ## Data contract
 
 - `data/snapshots.jsonl` — every collected universe snapshot
@@ -49,4 +67,3 @@ Stop it with `Ctrl+C`. Runtime data remains local under `data/` and is intention
 3. **OG/narrative lag:** a later separate feed pairing attention-triggering new coins with older related contracts, modeled after Ivan’s method.
 
 The selector must be frozen before outcomes are scored. Development, validation and untouched forward holdout results remain separate.
-

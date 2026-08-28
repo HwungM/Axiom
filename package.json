@@ -6,12 +6,13 @@
   "type": "module",
   "scripts": {
     "capture": "node src/capture-snapshot.mjs",
-    "monitor": "node src/monitor.mjs",
-    "report": "node src/report.mjs",
+    "monitor": "node --env-file=.env src/monitor.mjs",
+    "report": "node --env-file-if-exists=.env src/report.mjs",
+    "discord:check": "node --env-file=.env src/discord-check.mjs",
+    "discord:smoke": "node --env-file=.env src/discord-smoke.mjs",
     "test": "node --test"
   },
   "engines": {
     "node": ">=20"
   }
 }
-
