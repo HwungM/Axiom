@@ -64,6 +64,7 @@ export async function postDiscord(channel, message, options = {}) {
       footer: { text: trim(message.footer ?? 'PAPER RESEARCH — NO LIVE ORDERS', 2_048) },
     }],
   };
+  if (message.threadName) payload.thread_name = trim(message.threadName, 100);
 
   const response = await fetch(webhook, {
     method: 'POST',
@@ -74,4 +75,3 @@ export async function postDiscord(channel, message, options = {}) {
   if (!response.ok) throw new Error(`Discord ${channel} delivery failed with HTTP ${response.status}`);
   return { sent: true };
 }
-
