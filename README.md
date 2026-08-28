@@ -67,3 +67,5 @@ The monitor posts startup/shutdown/heartbeat status, exact migration events, eve
 3. **OG/narrative lag:** a later separate feed pairing attention-triggering new coins with older related contracts, modeled after Ivan’s method.
 
 The selector must be frozen before outcomes are scored. Development, validation and untouched forward holdout results remain separate.
+
+Migration pools are permanently deduplicated. `npm run paper:reconcile` rebuilds headline PnL from the first decision per pool and refuses to run while a position is open.

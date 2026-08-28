@@ -66,8 +66,10 @@ export class PaperEngine {
       entered: 0,
       skipped: 0,
       invalidatedTrades: 0,
+      seenMigrations: {},
     });
     this.state.invalidatedTrades ??= 0;
+    this.state.seenMigrations ??= {};
     if (Object.keys(this.state.openPositions).length > 0) {
       await this.invalidateOpenPositions('PROCESS_RESTART_DATA_GAP');
     }
@@ -83,7 +85,12 @@ export class PaperEngine {
   }
 
   async onMigration(migration) {
-    if (!this.config.enabled || this.candidates.has(migration.pool) || this.state.openPositions[migration.pool]) return;
+    if (!this.config.enabled || this.state.seenMigrations[migration.pool] || this.candidates.has(migration.pool) || this.state.openPositions[migration.pool]) return;
+    this.state.seenMigrations[migration.pool] = migration.blockTime;
+    const seenRows = Object.entries(this.state.seenMigrations);
+    if (seenRows.length > 10_000) {
+      this.state.seenMigrations = Object.fromEntries(seenRows.sort((a, b) => a[1] - b[1]).slice(-8_000));
+    }
     const candidate = {
       ...migration,
       migrationTime: migration.blockTime,
@@ -100,6 +107,7 @@ export class PaperEngine {
     for (const event of this.preMigrationEvents.get(migration.pool) ?? []) this.observeCandidate(candidate, event);
     this.preMigrationEvents.delete(migration.pool);
     await appendJsonl(path.join(this.dataRoot, 'paper', 'migrations.jsonl'), migration);
+    await this.persist();
     void postDiscord('migrationFeed', {
       title: `${migration.symbol ?? 'UNKNOWN'} canonical migration`,
       description: migration.name ?? 'Unnamed Pump token',

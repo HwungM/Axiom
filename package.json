@@ -10,6 +10,7 @@
     "report": "node --env-file-if-exists=.env src/report.mjs",
     "discord:check": "node --env-file=.env src/discord-check.mjs",
     "discord:smoke": "node --env-file=.env src/discord-smoke.mjs",
+    "paper:reconcile": "node --env-file=.env src/reconcile-paper.mjs",
     "test": "node --test"
   },
   "engines": {
