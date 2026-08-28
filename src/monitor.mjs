@@ -43,7 +43,7 @@ const chain = new LiveChain({
 await chain.start();
 await postDiscord('botStatus', {
   title: 'Forward paper engine online',
-  description: 'Live Pump migration detection, exact PumpSwap event capture, decision logging and counterfactual paper execution are active.',
+  description: 'Live Pump migration detection, ordered PumpSwap event capture and authoritative post-delay paper execution are active.',
   color: 0x45e6b0,
   fields: [
     { name: 'Snapshot interval', value: `${intervalMs}ms`, inline: true },

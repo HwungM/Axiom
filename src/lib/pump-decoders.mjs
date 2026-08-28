@@ -1,54 +1,59 @@
-import { decode58, encode58 } from './base58.mjs';
+import { decode58 } from './base58.mjs';
 import { getJson } from './http.mjs';
 import { getConfirmedTransaction } from './solana-rpc.mjs';
+import { getPumpAmmProgram } from '@pump-fun/pump-swap-sdk';
 
 export const PUMP_PROGRAM = '6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P';
 export const PUMPSWAP_PROGRAM = 'pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA';
 export const WSOL = 'So11111111111111111111111111111111111111112';
 
 const discriminatorKey = (bytes) => Buffer.from(bytes).toString('hex');
+const pumpSwapEventCoder = getPumpAmmProgram(null).coder.events;
+const number = (value) => value == null ? null : Number(value.toString(10));
+const raw = (value) => value == null ? null : value.toString(10);
+
+export function decodePumpSwapEvents(notification, received = {}) {
+  const rows = [];
+  for (const log of notification.value?.logs ?? []) {
+    const match = /^Program data: (.+)$/.exec(log);
+    if (!match) continue;
+    let decoded;
+    try { decoded = pumpSwapEventCoder.decode(match[1]); } catch { continue; }
+    if (decoded?.name !== 'buyEvent' && decoded?.name !== 'sellEvent') continue;
+    const data = decoded.data;
+    const side = decoded.name === 'buyEvent' ? 'buy' : 'sell';
+    rows.push({
+      signature: notification.value.signature,
+      slot: notification.context.slot,
+      receivedAtMs: received.receivedAtMs ?? Date.now(),
+      receivedSequence: received.receivedSequence ?? null,
+      side,
+      timestamp: number(data.timestamp),
+      baseAmountRaw: raw(side === 'buy' ? data.baseAmountOut : data.baseAmountIn),
+      baseReserveRaw: raw(data.poolBaseTokenReserves),
+      quoteReserveRaw: raw(data.poolQuoteTokenReserves),
+      quoteAmountRaw: raw(side === 'buy' ? data.quoteAmountIn : data.quoteAmountOut),
+      quoteReserveDeltaRaw: raw(side === 'buy' ? data.quoteAmountInWithLpFee : data.quoteAmountOutWithoutLpFee),
+      userQuoteAmountRaw: raw(side === 'buy' ? data.userQuoteAmountIn : data.userQuoteAmountOut),
+      lpFeeBasisPoints: number(data.lpFeeBasisPoints) ?? 0,
+      protocolFeeBasisPoints: number(data.protocolFeeBasisPoints) ?? 0,
+      coinCreatorFeeBasisPoints: number(data.coinCreatorFeeBasisPoints) ?? 0,
+      cashbackFeeBasisPoints: number(data.cashbackFeeBasisPoints) ?? 0,
+      virtualQuoteReservesRaw: raw(data.virtualQuoteReserves) ?? '0',
+      baseSupplyRaw: raw(data.baseSupply),
+      pool: data.pool.toString(),
+      user: data.user.toString(),
+      coinCreator: data.coinCreator?.toString?.() ?? null,
+    });
+  }
+  return rows;
+}
 
 export async function createPumpDecoders() {
-  const [pumpIdl, ammIdl] = await Promise.all([
-    getJson('https://raw.githubusercontent.com/pump-fun/pump-public-docs/main/idl/pump.json'),
-    getJson('https://raw.githubusercontent.com/pump-fun/pump-public-docs/main/idl/pump_amm.json'),
-  ]);
+  const pumpIdl = await getJson('https://raw.githubusercontent.com/pump-fun/pump-public-docs/main/idl/pump.json');
   const migrationInstructions = new Map(pumpIdl.instructions
     .filter((instruction) => instruction.name === 'migrate' || instruction.name === 'migrate_v2')
     .map((instruction) => [discriminatorKey(instruction.discriminator), instruction]));
-  const buyEvent = ammIdl.events.find((event) => event.name === 'BuyEvent');
-  const sellEvent = ammIdl.events.find((event) => event.name === 'SellEvent');
-  const buyDiscriminator = discriminatorKey(buyEvent.discriminator);
-  const sellDiscriminator = discriminatorKey(sellEvent.discriminator);
-
-  function decodePumpSwapEvents(notification) {
-    const rows = [];
-    for (const log of notification.value?.logs ?? []) {
-      const match = /^Program data: (.+)$/.exec(log);
-      if (!match) continue;
-      let bytes;
-      try { bytes = Buffer.from(match[1], 'base64'); } catch { continue; }
-      if (bytes.length < 184) continue;
-      const discriminator = bytes.subarray(0, 8).toString('hex');
-      if (discriminator !== buyDiscriminator && discriminator !== sellDiscriminator) continue;
-      const readUnsigned = (offset) => Number(bytes.readBigUInt64LE(offset));
-      const readSigned = (offset) => Number(bytes.readBigInt64LE(offset));
-      rows.push({
-        signature: notification.value.signature,
-        slot: notification.context.slot,
-        side: discriminator === buyDiscriminator ? 'buy' : 'sell',
-        timestamp: readSigned(8),
-        baseAmountRaw: readUnsigned(16),
-        baseReserveRaw: readUnsigned(48),
-        quoteReserveRaw: readUnsigned(56),
-        quoteAmountRaw: readUnsigned(64),
-        pool: encode58(bytes.subarray(120, 152)),
-        user: encode58(bytes.subarray(152, 184)),
-      });
-    }
-    return rows;
-  }
-
   async function resolveMigration(signature) {
     const transaction = await getConfirmedTransaction(signature);
     const top = transaction?.transaction?.message?.instructions ?? [];
@@ -81,6 +86,10 @@ export async function createPumpDecoders() {
         name: coin?.name ?? null,
         symbol: coin?.symbol ?? null,
         creator: coin?.creator ?? null,
+        totalSupplyRaw: coin?.total_supply != null ? String(coin.total_supply) : '1000000000000000',
+        solUsd: Number(coin?.usd_market_cap) > 0 && Number(coin?.market_cap) > 0
+          ? Number(coin.usd_market_cap) / Number(coin.market_cap)
+          : null,
         tokenCreatedTimestamp: coin?.created_timestamp ?? null,
       };
     }
@@ -89,4 +98,3 @@ export async function createPumpDecoders() {
 
   return { decodePumpSwapEvents, resolveMigration };
 }
-

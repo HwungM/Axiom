@@ -16,7 +16,9 @@ export class LiveChain {
     this.reconnectAttempts = 0;
     this.requestKinds = new Map([[1, 'pump'], [2, 'pumpswap']]);
     this.subscriptionKinds = new Map();
-    this.messageQueue = Promise.resolve();
+    this.pumpQueue = Promise.resolve();
+    this.pumpSwapQueue = Promise.resolve();
+    this.receivedSequence = 0;
   }
 
   async start() {
@@ -66,8 +68,22 @@ export class LiveChain {
         resolve();
       });
       socket.on('message', (data) => {
-        this.messageQueue = this.messageQueue
-          .then(() => this.handleMessage(data))
+        const receivedAtMs = Date.now();
+        const receivedSequence = ++this.receivedSequence;
+        let message;
+        try { message = JSON.parse(data.toString()); } catch (error) {
+          this.handlers.onError?.(error);
+          return;
+        }
+        if (message.id && message.result != null) {
+          const kind = this.requestKinds.get(message.id);
+          if (kind) this.subscriptionKinds.set(message.result, kind);
+          return;
+        }
+        const kind = this.subscriptionKinds.get(message.params?.subscription);
+        const queueName = kind === 'pumpswap' ? 'pumpSwapQueue' : 'pumpQueue';
+        this[queueName] = this[queueName]
+          .then(() => this.handleMessage(message, { receivedAtMs, receivedSequence, kind }))
           .catch((error) => this.handlers.onError?.(error));
       });
       socket.on('error', (error) => {
@@ -87,18 +103,12 @@ export class LiveChain {
     });
   }
 
-  async handleMessage(data) {
-    const message = JSON.parse(data.toString());
-    if (message.id && message.result != null) {
-      const kind = this.requestKinds.get(message.id);
-      if (kind) this.subscriptionKinds.set(message.result, kind);
-      return;
-    }
+  async handleMessage(message, received) {
     const notification = message.params?.result;
-    const kind = this.subscriptionKinds.get(message.params?.subscription);
+    const kind = received.kind;
     if (!notification || notification.value?.err || !kind) return;
     if (kind === 'pumpswap') {
-      for (const event of this.decoders.decodePumpSwapEvents(notification)) {
+      for (const event of this.decoders.decodePumpSwapEvents(notification, received)) {
         await this.handlers.onSwap?.(event);
       }
       return;

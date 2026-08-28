@@ -1,0 +1,54 @@
+import assert from 'node:assert/strict';
+import fs from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
+import test from 'node:test';
+import { PaperEngine } from '../src/paper-engine.mjs';
+
+const config = JSON.parse(await fs.readFile(new URL('../config/paper.v2.json', import.meta.url), 'utf8'));
+
+test('authoritative baseline and size shadows enter the identical confirmed state', async () => {
+  const dataRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'axiom-size-shadows-v2-'));
+  const previousDataRoot = process.env.DATA_ROOT;
+  process.env.DATA_ROOT = dataRoot;
+  const engine = new PaperEngine(config);
+  engine.solUsd = 100;
+  engine.state = {
+    version: config.version, startingBankrollSol: 3, availableBankrollSol: 3, realizedPnlSol: 0,
+    openPositions: {}, completedTrades: 0, wins: 0, losses: 0, decisions: 1, entered: 0, skipped: 0,
+    invalidatedTrades: 0, seenMigrations: {},
+  };
+  engine.shadowState = {
+    version: `${config.version}-size-shadows-v1`, startedAt: Date.now(), baselineSizeSol: 0.5, matchedSignals: 0,
+    cohorts: Object.fromEntries(engine.shadowSizes.map((sizeSol) => [String(sizeSol), {
+      sizeSol, realizedPnlSol: 0, completedTrades: 0, wins: 0, losses: 0, invalidatedTrades: 0, openPositions: {},
+    }])),
+  };
+  const state = {
+    baseReserveRaw: '190000000000000', quoteReserveRaw: '75000000000', virtualQuoteReservesRaw: '17500000000',
+    baseSupplyRaw: '1000000000000000', lpFeeBasisPoints: 20, protocolFeeBasisPoints: 5,
+    coinCreatorFeeBasisPoints: 0, cashbackFeeBasisPoints: 95,
+    sourceSlot: 10, sourceSignature: 'prior-swap', sourceTimestamp: 100, sourceReceivedAtMs: 10_000, sourceReceivedSequence: 5,
+  };
+  const candidate = {
+    pool: 'pool-one', mint: 'mint-one', name: 'Test token', symbol: 'TEST', actualState: state,
+    decidedAtMs: 8_500, totalSupplyRaw: 1_000_000_000_000_000, solUsd: 100,
+  };
+  const event = { pool: 'pool-one', timestamp: 100, receivedAtMs: 10_000, receivedSequence: 5, slot: 10, signature: 'prior-swap' };
+  engine.candidates.set(candidate.pool, candidate);
+
+  try {
+    await engine.executeCandidate(candidate, event);
+    const baseline = engine.state.openPositions['pool-one'];
+    assert.equal(baseline.sizeSol, 0.5);
+    assert.equal(baseline.entryReceivedSequence, 5);
+    assert.ok(baseline.entryMarketCapUsd > 0);
+    assert.deepEqual(engine.shadowCohorts().map((cohort) => cohort.openPositions['pool-one'].sizeSol), [1, 1.5, 2]);
+    assert.deepEqual(engine.shadowCohorts().map((cohort) => cohort.openPositions['pool-one'].entryReceivedSequence), [5, 5, 5]);
+    assert.equal(engine.shadowState.matchedSignals, 1);
+  } finally {
+    if (previousDataRoot == null) delete process.env.DATA_ROOT;
+    else process.env.DATA_ROOT = previousDataRoot;
+    await fs.rm(dataRoot, { recursive: true, force: true });
+  }
+});

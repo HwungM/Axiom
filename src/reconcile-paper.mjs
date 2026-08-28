@@ -3,10 +3,14 @@ import path from 'node:path';
 import { appendJsonl, readJson, writeJsonAtomic } from './lib/fs-store.mjs';
 
 const dataRoot = path.resolve(process.env.DATA_ROOT ?? 'data');
-const config = JSON.parse(await fs.readFile(path.resolve(process.env.PAPER_CONFIG ?? 'config/paper.v1.json'), 'utf8'));
-const stateFile = path.join(dataRoot, 'paper', 'state.json');
+const config = JSON.parse(await fs.readFile(path.resolve(process.env.PAPER_CONFIG ?? 'config/paper.v2.json'), 'utf8'));
+const paperRoot = path.join(dataRoot, config.dataDirectory ?? 'paper');
+const stateFile = path.join(paperRoot, 'state.json');
 const state = await readJson(stateFile, null);
-if (!state) throw new Error('Paper state does not exist');
+if (!state) {
+  console.log(JSON.stringify({ status: 'NOT_STARTED', message: `No ${config.version} paper state exists yet.` }, null, 2));
+  process.exit(0);
+}
 if (Object.keys(state.openPositions ?? {}).length > 0) throw new Error('Refusing to reconcile while paper positions are open');
 
 async function readJsonl(filename) {
@@ -18,9 +22,11 @@ async function readJsonl(filename) {
   }
 }
 
-const decisions = await readJsonl(path.join(dataRoot, 'paper', 'decisions.jsonl'));
-const exits = await readJsonl(path.join(dataRoot, 'paper', 'exits.jsonl'));
-const invalidated = await readJsonl(path.join(dataRoot, 'paper', 'invalidated.jsonl'));
+const decisions = await readJsonl(path.join(paperRoot, 'decisions.jsonl'));
+const entries = await readJsonl(path.join(paperRoot, 'entries.jsonl'));
+const exits = await readJsonl(path.join(paperRoot, 'exits.jsonl'));
+const invalidated = await readJsonl(path.join(paperRoot, 'invalidated.jsonl'));
+const executionSkips = await readJsonl(path.join(paperRoot, 'execution-skips.jsonl'));
 const firstDecisionByPool = new Map();
 const duplicateDecisions = [];
 for (const decision of decisions) {
@@ -28,11 +34,12 @@ for (const decision of decisions) {
   else firstDecisionByPool.set(decision.pool, decision);
 }
 const invalidatedIds = new Set(invalidated.map((row) => row.id));
+const entryIds = new Set(entries.map((row) => row.id));
 const validExits = [];
 const excludedExits = [];
 for (const exit of exits) {
   const firstDecision = firstDecisionByPool.get(exit.pool);
-  if (firstDecision?.decision === 'ENTER' && !invalidatedIds.has(exit.id)) validExits.push(exit);
+  if (firstDecision?.decision === 'QUALIFY' && entryIds.has(exit.id) && !invalidatedIds.has(exit.id)) validExits.push(exit);
   else excludedExits.push(exit);
 }
 
@@ -45,8 +52,8 @@ state.completedTrades = validExits.length;
 state.wins = validExits.filter((row) => row.pnlSol > 0).length;
 state.losses = validExits.filter((row) => row.pnlSol <= 0).length;
 state.decisions = uniqueDecisions.length;
-state.entered = uniqueDecisions.filter((row) => row.decision === 'ENTER').length;
-state.skipped = uniqueDecisions.filter((row) => row.decision === 'SKIP').length;
+state.entered = new Set(entries.map((row) => row.pool)).size;
+state.skipped = uniqueDecisions.filter((row) => row.decision === 'SKIP').length + executionSkips.length;
 state.invalidatedTrades = new Set([...invalidatedIds, ...excludedExits.map((row) => row.id)]).size;
 state.seenMigrations = Object.fromEntries(uniqueDecisions.map((row) => [row.pool, row.migrationTime]));
 state.reconciledAt = Date.now();
@@ -54,7 +61,7 @@ state.updatedAt = state.reconciledAt;
 state.updatedIso = new Date(state.updatedAt).toISOString();
 
 for (const exit of excludedExits) {
-  await appendJsonl(path.join(dataRoot, 'paper', 'corrections.jsonl'), {
+  await appendJsonl(path.join(paperRoot, 'corrections.jsonl'), {
     at: state.reconciledAt,
     type: 'EXCLUDED_EXIT',
     id: exit.id,

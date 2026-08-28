@@ -1,6 +1,7 @@
 {
   "version": "paper-v1-canonical-migrations",
-  "enabled": true,
+  "status": "RETIRED_INVALID_MODEL",
+  "enabled": false,
   "frozen": true,
   "startingBankrollSol": 3,
   "positionSizeSol": 0.5,
@@ -31,5 +32,5 @@
     "chargeOwnPoolImpact": true,
     "skipWithoutExactReserveState": true
   },
-  "note": "Frozen first forward hypothesis: canonical Pump migrations with standard-sized opening liquidity and no abnormal >10 SOL opening swap. Every pass and rejection is retained."
+  "note": "Retired on 2026-08-28. The blocking event queue, stale reserve reconstruction and fixed-fee CPMM made fills materially optimistic. Retained only as invalid legacy research."
 }

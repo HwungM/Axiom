@@ -1,0 +1,38 @@
+{
+  "version": "paper-v2-authoritative-landing",
+  "dataDirectory": "paper-v2",
+  "enabled": true,
+  "frozen": true,
+  "startingBankrollSol": 3,
+  "positionSizeSol": 0.5,
+  "shadowPositionSizesSol": [1, 1.5, 2],
+  "shadowComparison": {
+    "minimumCompletedTrades": 50,
+    "targetCompletedTrades": 100,
+    "mode": "matched-signals-authoritative-state"
+  },
+  "maxConcurrentPositions": 3,
+  "observationWindowSeconds": 5,
+  "takeProfitPct": 50,
+  "stopLossPct": 20,
+  "timeoutSeconds": 300,
+  "fixedCostPerTransactionSol": 0.0032,
+  "selector": {
+    "canonicalPumpMigration": true,
+    "minimumQuoteReserveSol": 20,
+    "maximumQuoteReserveSol": 150,
+    "maximumLargestOpeningSwapSol": 10,
+    "minimumIndependentBuyers": 1,
+    "minimumOpeningSwaps": 1
+  },
+  "execution": {
+    "simulatedLandingDelayMs": 1000,
+    "maximumLandingWaitMs": 5000,
+    "requireConfirmedPostDelaySwap": true,
+    "authoritativeEventReserves": true,
+    "dynamicEventFees": true,
+    "includeVirtualQuoteReserves": true,
+    "chargeOwnEntryAndExitImpact": true
+  },
+  "note": "V2 replaces stale reconstructed reserve paths with confirmed post-delay PumpSwap event state, event-native fees, virtual reserves and independent executable entry/exit quotes. V1 is retained only as invalidated legacy research."
+}

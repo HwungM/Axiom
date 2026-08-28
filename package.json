@@ -11,7 +11,7 @@
     "discord:check": "node --env-file=.env src/discord-check.mjs",
     "discord:smoke": "node --env-file=.env src/discord-smoke.mjs",
     "paper:reconcile": "node --env-file=.env src/reconcile-paper.mjs",
-    "paper:size-sweep": "node --env-file=.env src/analyze-size-sweep.mjs",
+    "paper:size-sweep:legacy": "node --env-file=.env src/analyze-size-sweep.mjs",
     "paper:shadow-report": "node --env-file=.env src/report-size-shadows.mjs",
     "test": "node --test"
   },
@@ -19,6 +19,7 @@
     "node": ">=20"
   },
   "dependencies": {
+    "@pump-fun/pump-swap-sdk": "^1.19.0",
     "ws": "^8.21.3"
   }
 }

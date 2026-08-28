@@ -3,8 +3,9 @@ import path from 'node:path';
 import { readJson } from './lib/fs-store.mjs';
 
 const dataRoot = path.resolve(process.env.DATA_ROOT ?? 'data');
-const config = JSON.parse(await fs.readFile(path.resolve(process.env.PAPER_CONFIG ?? 'config/paper.v1.json'), 'utf8'));
-const state = await readJson(path.join(dataRoot, 'paper', 'size-shadow-state.json'), null);
+const config = JSON.parse(await fs.readFile(path.resolve(process.env.PAPER_CONFIG ?? 'config/paper.v2.json'), 'utf8'));
+const paperRoot = path.join(dataRoot, config.dataDirectory ?? 'paper');
+const state = await readJson(path.join(paperRoot, 'size-shadow-state.json'), null);
 
 if (!state) {
   console.log(JSON.stringify({
@@ -36,7 +37,7 @@ console.log(JSON.stringify({
   status: cohorts.every((cohort) => cohort.completedTrades >= target)
     ? 'TARGET_REACHED'
     : cohorts.every((cohort) => cohort.completedTrades >= minimum) ? 'MINIMUM_REACHED' : 'COLLECTING',
-  methodology: 'Each cohort enters only when the frozen 0.5 SOL baseline enters, uses the same decision-time pool state and external swaps, then exits independently at its own TP, SL or timeout.',
+  methodology: 'Each cohort enters only when the frozen 0.5 SOL baseline enters, uses the same authoritative post-delay event state, pays its own event-native fees and price impact, then exits independently at its own TP, SL or timeout.',
   capitalModel: 'Unconstrained matched cohorts isolate position-size effects. They are not permission to deploy the same sizes from a 3 SOL live wallet.',
   startedAt: new Date(state.startedAt).toISOString(),
   matchedSignals: state.matchedSignals,

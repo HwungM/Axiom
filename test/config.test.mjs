@@ -3,7 +3,8 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 const config = JSON.parse(await fs.readFile(new URL('../config/paper.v0.json', import.meta.url), 'utf8'));
-const livePaperConfig = JSON.parse(await fs.readFile(new URL('../config/paper.v1.json', import.meta.url), 'utf8'));
+const legacyPaperConfig = JSON.parse(await fs.readFile(new URL('../config/paper.v1.json', import.meta.url), 'utf8'));
+const livePaperConfig = JSON.parse(await fs.readFile(new URL('../config/paper.v2.json', import.meta.url), 'utf8'));
 
 test('paper v0 preserves the agreed bankroll and risk experiment', () => {
   assert.equal(config.startingBankrollSol, 3);
@@ -13,22 +14,33 @@ test('paper v0 preserves the agreed bankroll and risk experiment', () => {
   assert.equal(config.timeoutSeconds, 300);
 });
 
-test('paper v1 is enabled with the frozen first forward selector', () => {
+test('paper v2 is enabled with the frozen first forward selector', () => {
   assert.equal(livePaperConfig.enabled, true);
   assert.equal(livePaperConfig.frozen, true);
   assert.equal(livePaperConfig.startingBankrollSol, 3);
   assert.equal(livePaperConfig.positionSizeSol, 0.5);
   assert.equal(livePaperConfig.observationWindowSeconds, 5);
   assert.equal(livePaperConfig.selector.maximumLargestOpeningSwapSol, 10);
-  assert.equal(livePaperConfig.execution.chargeOwnPoolImpact, true);
+  assert.equal(livePaperConfig.execution.chargeOwnEntryAndExitImpact, true);
+  assert.equal(livePaperConfig.execution.authoritativeEventReserves, true);
+  assert.equal(livePaperConfig.execution.dynamicEventFees, true);
+  assert.equal(livePaperConfig.execution.simulatedLandingDelayMs, 1000);
+  assert.equal(livePaperConfig.dataDirectory, 'paper-v2');
 });
 
-test('paper v1 preserves the 0.5 SOL baseline and declares matched size shadows', () => {
+test('paper v2 preserves the 0.5 SOL baseline and declares matched size shadows', () => {
   assert.equal(livePaperConfig.positionSizeSol, 0.5);
   assert.deepEqual(livePaperConfig.shadowPositionSizesSol, [1, 1.5, 2]);
   assert.equal(livePaperConfig.shadowComparison.minimumCompletedTrades, 50);
   assert.equal(livePaperConfig.shadowComparison.targetCompletedTrades, 100);
-  assert.equal(livePaperConfig.shadowComparison.mode, 'matched-signals-unconstrained-capital');
+  assert.equal(livePaperConfig.shadowComparison.mode, 'matched-signals-authoritative-state');
+});
+
+test('paper v1 remains identifiable as legacy counterfactual replay', () => {
+  assert.equal(legacyPaperConfig.version, 'paper-v1-canonical-migrations');
+  assert.equal(legacyPaperConfig.status, 'RETIRED_INVALID_MODEL');
+  assert.equal(legacyPaperConfig.enabled, false);
+  assert.equal(legacyPaperConfig.execution.replayExternalSwapInputs, true);
 });
 
 test('paper v0 does not invent an unfinished selection rule', () => {
