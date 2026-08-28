@@ -1,0 +1,23 @@
+{
+  "version": "paper-v0-observation-only",
+  "frozen": true,
+  "startingBankrollSol": 3,
+  "positionSizeSol": 0.5,
+  "maxConcurrentPositions": 3,
+  "entryDelaysSeconds": [0, 1, 2, 5],
+  "takeProfitPct": 50,
+  "stopLossPct": 20,
+  "timeoutSeconds": 300,
+  "fixedCostPerTransactionSol": 0.0032,
+  "poolFeeRate": 0.0125,
+  "selector": {
+    "canonicalPumpMigration": true,
+    "quoteMint": "So11111111111111111111111111111111111111112",
+    "maximumAgeAtFirstObservationSeconds": 900,
+    "maximumLargestOpeningSwapSol": null,
+    "minimumIndependentBuyers": null,
+    "minimumNetOpeningFlowSol": null
+  },
+  "note": "This version captures the unbiased universe. Null selector fields are deliberately not guessed and no paper orders are emitted until exact on-chain opening-flow features are available."
+}
+

@@ -1,0 +1,17 @@
+{
+  "name": "axiom-forward-lab",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Append-only Solana memecoin telemetry and paper-trading research harness.",
+  "type": "module",
+  "scripts": {
+    "capture": "node src/capture-snapshot.mjs",
+    "monitor": "node src/monitor.mjs",
+    "report": "node src/report.mjs",
+    "test": "node --test"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
+
