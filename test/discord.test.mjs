@@ -43,5 +43,9 @@ test('closed-trade case studies expose auditable entry and exit market caps', as
   assert.match(caseStudySection, /Observed spot MC before entry/);
   assert.match(caseStudySection, /Observed spot MC before exit/);
   assert.match(caseStudySection, /Execution evidence/);
+  assert.match(caseStudySection, /Lifecycle timestamps/);
+  assert.match(caseStudySection, /Pipeline latency/);
+  assert.match(caseStudySection, /Competition before entry/);
+  assert.match(caseStudySection, /Dump guard at entry/);
   assert.match(caseStudySection, /MC method/);
 });

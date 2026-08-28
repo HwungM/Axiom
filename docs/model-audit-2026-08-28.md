@@ -34,6 +34,17 @@ This reconstruction is deliberately labeled approximate because the v1 archive d
 
 This is still a paper model, not a promise of live execution. A live bot can land later, fail or receive a worse position within the ordering than the modeled fill. The forward sample must therefore be treated as an upper-bound research result until it is compared with real tiny-size fills.
 
+## v3 latency and competition addendum
+
+The zero-trade v2 transition run exposed two remaining sources of optimism before any PnL was recorded:
+
+- entry had a delay, but exits were still credited immediately when their trigger was observed;
+- the result did not explicitly show the wallets and SOL flow observed between signal and modeled fill.
+
+V3 applies a 1,000ms modeled delay to both entries and exits, records every observed intervening buy/sell and its size, and timestamps the migration block time (coarse), local log receipt, transaction resolution, signal/submission, entry, exit trigger and exit fill. It also records what a 170ms quote would have looked like, but does not credit that diagnostic to PnL. Helius Sender can improve routing and inclusion probability; it does not guarantee that an end-to-end trade will fill in 170ms.
+
+V3 also adds a frozen active-dump guard. It rejects entries with severe peak drawdown plus net selling or strong one-second sell pressure. This may avoid obvious migrations that are already unwinding, but it may also reject recoveries; only forward results can determine whether the guard improves expectancy.
+
 ## Authoritative reference
 
 Pump's official PumpSwap documentation describes effective quote reserves as raw quote reserves plus virtual quote reserves and exposes the current event and fee fields used by v2:

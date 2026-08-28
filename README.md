@@ -4,7 +4,7 @@ An append-only research harness for discovering and forward-testing Solana memec
 
 ## Current phase
 
-`paper-v2-authoritative-landing` is the active frozen forward hypothesis. A live Solana WebSocket watches Pump migrations and PumpSwap events, records every decision, and maintains a fresh 3 SOL paper account under `data/paper-v2/`.
+`paper-v3-latency-competition-guard` is the active frozen forward hypothesis. A live Solana WebSocket watches Pump migrations and PumpSwap events, records every decision, and maintains a fresh 3 SOL paper account under `data/paper-v3/`.
 
 The official baseline remains fixed at 0.5 SOL. Every baseline entry also starts matched 1.0, 1.5 and 2.0 SOL size shadows from the identical confirmed post-delay pool state. Each shadow pays its own modeled price impact and exits independently at its own take-profit, stop-loss or timeout. These are unconstrained comparison cohorts—not recommendations to fund those sizes from the 3 SOL baseline wallet.
 
@@ -12,13 +12,17 @@ Agreed experimental account:
 
 - starting bankroll: 3 SOL
 - proposed position size: 0.5 SOL
-- modeled landing delay: 1 second, followed by a required authoritative PumpSwap event within 5 seconds
+- official modeled entry and exit landing delay: 1 second
+- opening signal window: 1 second (not the retired five-second wait)
+- 170ms fast-path quote: diagnostic only, never credited to official PnL
 - initial exit family: +50% take-profit / −20% stop / 300-second timeout
 - pool impact, platform/pool fees, fixed transaction costs, failed entries and failed exits must be charged
 
-Those exit values are hypotheses, not a live recommendation. Paper entries wait for a confirmed post-delay event, use the event's effective reserves (including virtual quote reserves) and dynamic fee fields, charge their own entry/exit impact and fixed costs, and never submit a transaction. Case studies report average executable-fill market cap at entry and exit, not a stale chart candle value.
+Those exit values are hypotheses, not a live recommendation. Paper entries wait for a confirmed post-delay event, use the event's effective reserves (including virtual quote reserves) and dynamic fee fields, charge their own entry/exit impact and fixed costs, and never submit a transaction. Exits also wait a modeled second after their trigger so intervening flow can worsen the fill. Case studies report average executable-fill and observed spot market caps, millisecond lifecycle timestamps, migration-resolution time, and buy/sell competition observed before entry and exit.
 
-`paper-v1-canonical-migrations` is retired. Its single blocking event queue, stale reconstructed reserve path and fixed-fee CPMM could credit same-second flow that occurred before a realistically executable entry. Its 19 historical closes and headline PnL are invalid research artifacts and are not carried into v2. See [the model audit](docs/model-audit-2026-08-28.md).
+The dump guard rejects an entry when the token is at least 20% below its observed post-migration peak with net selling, or when the latest 1,000ms contains at least 0.5 SOL of sells at a 2:1 or worse sell-to-buy ratio. These thresholds are a frozen hypothesis and must be evaluated rather than assumed optimal.
+
+`paper-v1-canonical-migrations` is retired. Its single blocking event queue, stale reconstructed reserve path and fixed-fee CPMM could credit same-second flow that occurred before a realistically executable entry. Its 19 historical closes and headline PnL are invalid research artifacts. V2 was a zero-trade transitional run and is superseded by v3. See [the model audit](docs/model-audit-2026-08-28.md).
 
 ## Run it
 
@@ -64,10 +68,10 @@ The monitor posts startup/shutdown/heartbeat status, exact migration events, eve
 - `data/events/first-seen-pools.jsonl` — one immutable first observation per pool
 - `data/events/canonical-migrations.jsonl` — first observations confirmed by Pump as the canonical migrated pool
 - `data/state.json` — deduplication state; deleting this starts a new corpus
-- `data/paper-v2/state.json` — current authoritative baseline paper account
-- `data/paper-v2/entries.jsonl` / `exits.jsonl` — append-only baseline fills with entry and exit market caps
-- `data/paper-v2/size-shadow-state.json` — current matched size-cohort totals and open positions
-- `data/paper-v2/size-shadow-entries.jsonl` / `size-shadow-exits.jsonl` — append-only independent paths for the 1.0, 1.5 and 2.0 SOL cohorts
+- `data/paper-v3/state.json` — current authoritative baseline paper account
+- `data/paper-v3/entries.jsonl` / `exits.jsonl` — append-only baseline fills with timing, competition and market-cap evidence
+- `data/paper-v3/size-shadow-state.json` — current matched size-cohort totals and open positions
+- `data/paper-v3/size-shadow-entries.jsonl` / `size-shadow-exits.jsonl` — append-only independent paths for the 1.0, 1.5 and 2.0 SOL cohorts
 
 ## Research tracks
 

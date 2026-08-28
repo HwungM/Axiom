@@ -7,6 +7,7 @@ import { fillMarketCap, marketStateAfterEvent, quoteBuyWithSol, quoteSellTokens,
 
 const round = (value, places = 6) => Number(Number(value).toFixed(places));
 const formatSol = (value) => `${Number(value).toFixed(4)} SOL`;
+const eventQuoteSol = (event) => Number(event.userQuoteAmountRaw ?? event.quoteAmountRaw) / 1e9;
 const formatMarketCap = (usd, sol) => {
   const compact = (value, prefix = '') => {
     if (!Number.isFinite(value)) return null;
@@ -18,10 +19,16 @@ const formatMarketCap = (usd, sol) => {
   const solText = compact(sol);
   return usdText ? `${usdText}${solText ? ` (${solText} SOL)` : ''}` : solText ? `${solText} SOL` : 'Unavailable';
 };
+const formatCompetition = (competition) => competition
+  ? `${competition.observedBuys} buys / ${Number(competition.buySol).toFixed(3)} SOL · ${competition.observedSells} sells / ${Number(competition.sellSol).toFixed(3)} SOL`
+  : 'Unavailable';
+const formatTopWallets = (rows) => rows?.length
+  ? rows.map(({ wallet, sol }) => `\`${wallet}\` · ${Number(sol).toFixed(3)} SOL`).join('\n')
+  : 'None observed';
 
 export class PaperEngine {
   static async create(options = {}) {
-    const configPath = path.resolve(process.env.PAPER_CONFIG ?? 'config/paper.v2.json');
+    const configPath = path.resolve(process.env.PAPER_CONFIG ?? 'config/paper.v3.json');
     const config = JSON.parse(await fs.readFile(configPath, 'utf8'));
     const engine = new PaperEngine(config, options);
     await engine.restore();
@@ -40,6 +47,8 @@ export class PaperEngine {
       .sort((a, b) => a - b);
     this.candidates = new Map();
     this.preMigrationEvents = new Map();
+    this.preMigrationDropped = new Map();
+    this.eventJournalQueue = Promise.resolve();
     this.lastDailyReportDate = null;
     this.solUsd = null;
   }
@@ -102,47 +111,169 @@ export class PaperEngine {
     this.state.seenMigrations[migration.pool] = migration.blockTime;
     const seenRows = Object.entries(this.state.seenMigrations);
     if (seenRows.length > 10_000) this.state.seenMigrations = Object.fromEntries(seenRows.sort((a, b) => a[1] - b[1]).slice(-8_000));
-    const detectedAtMs = Date.now();
+    const detectedAtMs = migration.migrationResolvedAtMs ?? Date.now();
     const candidate = {
       ...migration, migrationTime: migration.blockTime, detectedAtMs,
       decisionAtMs: Math.max(migration.blockTime * 1_000 + this.config.observationWindowSeconds * 1_000, detectedAtMs),
-      events: [], actualState: null, buyers: new Set(), openingBuysSol: 0, openingSellsSol: 0,
-      largestOpeningSwapSol: 0, decided: false, approved: false,
+      events: [], droppedEvents: 0, preMigrationDroppedEvents: this.preMigrationDropped.get(migration.pool) ?? 0,
+      actualState: null, buyers: new Set(), openingBuysSol: 0, openingSellsSol: 0,
+      largestOpeningSwapSol: 0, peakSpotMarketCapSol: null, currentSpotMarketCapSol: null,
+      currentDrawdownPct: 0, decided: false, approved: false, fastPathDiagnostic: null,
     };
     this.candidates.set(migration.pool, candidate);
     for (const event of this.preMigrationEvents.get(migration.pool) ?? []) this.observeCandidate(candidate, event);
     this.preMigrationEvents.delete(migration.pool);
+    this.preMigrationDropped.delete(migration.pool);
     await appendJsonl(path.join(this.paperRoot, 'migrations.jsonl'), migration);
     await this.persist();
+    void this.enrichCandidate(candidate).catch((error) => this.options.onError?.(error));
     void postDiscord('migrationFeed', {
       title: `${migration.symbol ?? 'UNKNOWN'} canonical migration`, description: migration.name ?? 'Unnamed Pump token', color: 0x45e6b0,
       fields: [
         { name: 'Mint', value: `\`${migration.mint}\`` }, { name: 'Pool', value: `\`${migration.pool}\`` },
         { name: 'Detected', value: new Date(detectedAtMs).toISOString(), inline: true },
+        { name: 'Resolve latency', value: migration.migrationResolutionMs == null ? 'Unavailable' : `${migration.migrationResolutionMs}ms`, inline: true },
         { name: 'Decision model', value: `${this.config.observationWindowSeconds}s opening window`, inline: true },
       ],
     }).catch((error) => this.options.onError?.(error));
     setTimeout(() => this.decide(migration.pool).catch((error) => this.options.onError?.(error)), Math.max(0, candidate.decisionAtMs - Date.now())).unref();
   }
 
+  async enrichCandidate(candidate) {
+    const coin = await getJson(`https://frontend-api-v3.pump.fun/coins/${candidate.mint}`, { attempts: 2, baseDelayMs: 250 });
+    candidate.name = coin?.name ?? candidate.name;
+    candidate.symbol = coin?.symbol ?? candidate.symbol;
+    candidate.creator = coin?.creator ?? candidate.creator;
+    candidate.totalSupplyRaw = coin?.total_supply != null ? String(coin.total_supply) : candidate.totalSupplyRaw;
+    candidate.tokenCreatedTimestamp = coin?.created_timestamp ?? candidate.tokenCreatedTimestamp;
+    if (Number(coin?.usd_market_cap) > 0 && Number(coin?.market_cap) > 0) {
+      candidate.solUsd = Number(coin.usd_market_cap) / Number(coin.market_cap);
+    }
+  }
+
   bufferPreMigration(event) {
     const rows = this.preMigrationEvents.get(event.pool) ?? [];
     rows.push(event);
+    if (rows.length > 500) this.preMigrationDropped.set(event.pool, (this.preMigrationDropped.get(event.pool) ?? 0) + 1);
     this.preMigrationEvents.set(event.pool, rows.slice(-500));
-    if (this.preMigrationEvents.size > 1_000) this.preMigrationEvents.delete(this.preMigrationEvents.keys().next().value);
+    if (this.preMigrationEvents.size > 1_000) {
+      const oldest = this.preMigrationEvents.keys().next().value;
+      this.preMigrationEvents.delete(oldest);
+      this.preMigrationDropped.delete(oldest);
+    }
   }
 
   observeCandidate(candidate, event) {
     if (event.timestamp < candidate.migrationTime - 2) return;
     candidate.events.push(event);
-    if (candidate.events.length > 1_000) candidate.events.shift();
+    if (candidate.events.length > 5_000) {
+      candidate.events.shift();
+      candidate.droppedEvents += 1;
+    }
     candidate.actualState = marketStateAfterEvent(event, candidate.totalSupplyRaw);
     candidate.latestEvent = event;
+    const spotMarketCapSol = spotMarketCapSol(candidate.actualState);
+    if (event.timestamp >= candidate.migrationTime && Number.isFinite(spotMarketCapSol)) {
+      candidate.currentSpotMarketCapSol = spotMarketCapSol;
+      candidate.peakSpotMarketCapSol = Math.max(candidate.peakSpotMarketCapSol ?? spotMarketCapSol, spotMarketCapSol);
+      candidate.currentDrawdownPct = candidate.peakSpotMarketCapSol > 0
+        ? 100 * (candidate.peakSpotMarketCapSol - spotMarketCapSol) / candidate.peakSpotMarketCapSol : 0;
+    }
+    if (event.timestamp < candidate.migrationTime) return;
     if (event.timestamp > candidate.migrationTime + this.config.observationWindowSeconds) return;
-    const amountSol = Number(event.userQuoteAmountRaw ?? event.quoteAmountRaw) / 1e9;
+    const amountSol = eventQuoteSol(event);
     candidate.largestOpeningSwapSol = Math.max(candidate.largestOpeningSwapSol, amountSol);
     if (event.side === 'buy') { candidate.openingBuysSol += amountSol; candidate.buyers.add(event.user); }
     else candidate.openingSellsSol += amountSol;
+  }
+
+  competitionStats(candidate, throughSequence) {
+    const events = (candidate.events ?? []).filter((event) => event.receivedSequence > (candidate.decisionReceivedSequence ?? 0)
+      && event.receivedSequence <= throughSequence);
+    const buyers = new Map();
+    const sellers = new Map();
+    let buySol = 0;
+    let sellSol = 0;
+    let largestBuySol = 0;
+    let largestSellSol = 0;
+    for (const event of events) {
+      const amountSol = eventQuoteSol(event);
+      if (event.side === 'buy') {
+        buySol += amountSol;
+        largestBuySol = Math.max(largestBuySol, amountSol);
+        buyers.set(event.user, (buyers.get(event.user) ?? 0) + amountSol);
+      } else {
+        sellSol += amountSol;
+        largestSellSol = Math.max(largestSellSol, amountSol);
+        sellers.set(event.user, (sellers.get(event.user) ?? 0) + amountSol);
+      }
+    }
+    return {
+      observedEvents: events.length,
+      observedBuys: events.filter((event) => event.side === 'buy').length,
+      observedSells: events.filter((event) => event.side === 'sell').length,
+      independentBuyers: buyers.size,
+      buySol: round(buySol),
+      sellSol: round(sellSol),
+      largestBuySol: round(largestBuySol),
+      largestSellSol: round(largestSellSol),
+      estimatedPositionBehindObservedBuys: events.filter((event) => event.side === 'buy').length + 1,
+      topObservedBuyers: [...buyers.entries()].sort((a, b) => b[1] - a[1]).slice(0, 5)
+        .map(([wallet, sol]) => ({ wallet, sol: round(sol) })),
+      topObservedSellers: [...sellers.entries()].sort((a, b) => b[1] - a[1]).slice(0, 5)
+        .map(([wallet, sol]) => ({ wallet, sol: round(sol) })),
+      observedSignatures: events.slice(0, 50).map((event) => event.signature),
+    };
+  }
+
+  dumpMetrics(candidate, atMs) {
+    const guard = this.config.dumpGuard ?? {};
+    const windowMs = guard.windowMs ?? 1_000;
+    const recent = (candidate.events ?? []).filter((event) => event.receivedAtMs >= atMs - windowMs && event.receivedAtMs <= atMs);
+    const buySol = recent.filter((event) => event.side === 'buy').reduce((sum, event) => sum + eventQuoteSol(event), 0);
+    const sellSol = recent.filter((event) => event.side === 'sell').reduce((sum, event) => sum + eventQuoteSol(event), 0);
+    const sellToBuyRatio = buySol > 0 ? sellSol / buySol : sellSol > 0 ? null : 0;
+    const reasons = [];
+    const drawdown = candidate.currentDrawdownPct ?? 0;
+    if (guard.enabled && drawdown >= guard.maximumPeakDrawdownPct && sellSol > buySol) {
+      reasons.push(`active dump: ${drawdown.toFixed(1)}% below observed post-migration peak with net selling`);
+    }
+    if (guard.enabled && sellSol >= guard.minimumSellPressureSol
+      && (buySol === 0 || sellSol / buySol >= guard.maximumSellToBuyRatio)) {
+      reasons.push(`active dump: ${sellSol.toFixed(3)} SOL sold vs ${buySol.toFixed(3)} SOL bought in ${windowMs}ms`);
+    }
+    return {
+      windowMs,
+      buySol: round(buySol),
+      sellSol: round(sellSol),
+      sellToBuyRatio: sellToBuyRatio == null ? null : round(sellToBuyRatio, 3),
+      peakDrawdownPct: round(drawdown, 3),
+      peakSpotMarketCapSol: candidate.peakSpotMarketCapSol,
+      currentSpotMarketCapSol: candidate.currentSpotMarketCapSol,
+      reasons,
+    };
+  }
+
+  captureFastPathDiagnostic(candidate, event) {
+    try {
+      const quote = quoteBuyWithSol(candidate.actualState, this.config.positionSizeSol);
+      const solUsd = this.solUsd ?? candidate.solUsd ?? null;
+      const marketCap = fillMarketCap({
+        quoteSol: quote.spendSol,
+        tokensRaw: quote.tokensRaw,
+        supplyRaw: candidate.actualState.baseSupplyRaw,
+        solUsd,
+      });
+      candidate.fastPathDiagnostic = {
+        targetMs: candidate.fastPathNotBeforeMs,
+        observedAtMs: event.receivedAtMs,
+        observedSequence: event.receivedSequence,
+        observedDelayMs: event.receivedAtMs - candidate.submittedAtMs,
+        averageFillMarketCapSol: marketCap.sol,
+        averageFillMarketCapUsd: marketCap.usd,
+        competition: this.competitionStats(candidate, event.receivedSequence),
+      };
+    } catch {}
   }
 
   async onSwap(event) {
@@ -154,6 +285,7 @@ export class PaperEngine {
       position.lastSwapTimestamp = event.timestamp;
       position.lastSwapReceivedAtMs = event.receivedAtMs;
       position.externalSwaps += 1;
+      this.recordPositionFlow(position, event);
       await this.evaluate(position, event.receivedAtMs, 'swap');
     }
     const shadows = this.shadowPositionsForPool(event.pool);
@@ -164,15 +296,47 @@ export class PaperEngine {
       shadow.lastSwapTimestamp = event.timestamp;
       shadow.lastSwapReceivedAtMs = event.receivedAtMs;
       shadow.externalSwaps += 1;
+      this.recordPositionFlow(shadow, event);
       await this.evaluateShadow(cohort, shadow, event.receivedAtMs, 'swap');
     }
     const candidate = this.candidates.get(event.pool);
     if (candidate) {
       relevant = true;
       this.observeCandidate(candidate, event);
+      if (candidate.approved && !candidate.fastPathDiagnostic && event.receivedAtMs >= candidate.fastPathNotBeforeMs) {
+        this.captureFastPathDiagnostic(candidate, event);
+      }
       if (candidate.approved && event.receivedAtMs >= candidate.landingNotBeforeMs) await this.executeCandidate(candidate, event);
     } else if (!position && shadows.length === 0) this.bufferPreMigration(event);
-    if (relevant) await appendJsonl(path.join(this.dataRoot, 'events', 'pumpswap-swaps.jsonl'), event);
+    if (relevant) {
+      this.eventJournalQueue = this.eventJournalQueue
+        .then(() => appendJsonl(path.join(this.dataRoot, 'events', 'pumpswap-swaps.jsonl'), event))
+        .catch((error) => this.options.onError?.(error));
+    }
+  }
+
+  recordPositionFlow(position, event) {
+    const amountSol = eventQuoteSol(event);
+    if (event.side === 'buy') {
+      position.externalBuySol = (position.externalBuySol ?? 0) + amountSol;
+      position.largestExternalBuySol = Math.max(position.largestExternalBuySol ?? 0, amountSol);
+    } else {
+      position.externalSellSol = (position.externalSellSol ?? 0) + amountSol;
+      position.largestExternalSellSol = Math.max(position.largestExternalSellSol ?? 0, amountSol);
+    }
+    if (position.pendingExit && event.receivedSequence > position.pendingExit.triggerReceivedSequence) {
+      const competition = position.pendingExit.competition;
+      competition.observedEvents += 1;
+      if (event.side === 'buy') {
+        competition.observedBuys += 1;
+        competition.buySol += amountSol;
+        competition.largestBuySol = Math.max(competition.largestBuySol, amountSol);
+      } else {
+        competition.observedSells += 1;
+        competition.sellSol += amountSol;
+        competition.largestSellSol = Math.max(competition.largestSellSol, amountSol);
+      }
+    }
   }
 
   decisionReasons(candidate) {
@@ -182,6 +346,9 @@ export class PaperEngine {
       && event.timestamp <= candidate.migrationTime + this.config.observationWindowSeconds);
     const quoteReserveSol = opening[0]?.quoteReserveRaw / 1e9;
     if (!candidate.actualState || !Number.isFinite(quoteReserveSol)) reasons.push('no authoritative executable reserve state');
+    if (candidate.preMigrationDroppedEvents > 0 || candidate.droppedEvents > 0) {
+      reasons.push(`incomplete competition tape: ${candidate.preMigrationDroppedEvents + candidate.droppedEvents} event(s) dropped`);
+    }
     if (Number.isFinite(quoteReserveSol) && quoteReserveSol < selector.minimumQuoteReserveSol) reasons.push(`quote reserve below ${selector.minimumQuoteReserveSol} SOL`);
     if (Number.isFinite(quoteReserveSol) && quoteReserveSol > selector.maximumQuoteReserveSol) reasons.push(`quote reserve above ${selector.maximumQuoteReserveSol} SOL`);
     if (candidate.largestOpeningSwapSol > selector.maximumLargestOpeningSwapSol) reasons.push(`opening swap ${candidate.largestOpeningSwapSol.toFixed(2)} SOL exceeds ${selector.maximumLargestOpeningSwapSol}`);
@@ -197,9 +364,23 @@ export class PaperEngine {
     candidate.decidedAtMs = Date.now();
     const { reasons, quoteReserveSol, openingSwaps } = this.decisionReasons(candidate);
     const decision = reasons.length ? 'SKIP' : 'QUALIFY';
+    candidate.decisionReceivedSequence = candidate.latestEvent?.receivedSequence ?? candidate.migrationLogReceivedSequence ?? 0;
+    if (decision === 'QUALIFY') {
+      candidate.submittedAtMs = Date.now();
+      candidate.fastPathNotBeforeMs = candidate.submittedAtMs + this.config.execution.fastPathDiagnosticMs;
+      candidate.landingNotBeforeMs = candidate.submittedAtMs + this.config.execution.simulatedLandingDelayMs;
+    }
     const row = {
       at: candidate.decidedAtMs, version: this.config.version, decision, reasons, pool, mint: candidate.mint,
       name: candidate.name, symbol: candidate.symbol, migrationTime: candidate.migrationTime, detectedAtMs: candidate.detectedAtMs,
+      migrationBlockTimeMs: candidate.migrationTime * 1_000,
+      migrationLogReceivedAtMs: candidate.migrationLogReceivedAtMs,
+      migrationResolvedAtMs: candidate.migrationResolvedAtMs,
+      migrationResolutionMs: candidate.migrationResolutionMs,
+      decisionReceivedSequence: candidate.decisionReceivedSequence,
+      submittedAtMs: candidate.submittedAtMs ?? null,
+      fastPathTargetAtMs: candidate.fastPathNotBeforeMs ?? null,
+      conservativeLandingTargetAtMs: candidate.landingNotBeforeMs ?? null,
       quoteReserveSol, openingSwaps, independentBuyers: candidate.buyers.size,
       largestOpeningSwapSol: candidate.largestOpeningSwapSol, openingNetFlowSol: candidate.openingBuysSol - candidate.openingSellsSol,
     };
@@ -210,7 +391,6 @@ export class PaperEngine {
       this.candidates.delete(pool);
     } else {
       candidate.approved = true;
-      candidate.landingNotBeforeMs = candidate.decidedAtMs + this.config.execution.simulatedLandingDelayMs;
       const expiresAt = candidate.landingNotBeforeMs + this.config.execution.maximumLandingWaitMs;
       setTimeout(() => this.expireCandidate(pool).catch((error) => this.options.onError?.(error)), Math.max(0, expiresAt - Date.now())).unref();
     }
@@ -218,13 +398,14 @@ export class PaperEngine {
     void postDiscord('decisionLog', {
       title: `${decision}: ${candidate.symbol ?? candidate.mint.slice(0, 8)}`,
       description: decision === 'QUALIFY'
-        ? `Selector passed. Waiting ${this.config.execution.simulatedLandingDelayMs}ms and requiring a confirmed post-delay pool event before entry.`
+        ? `Selector passed. 170ms fast-path diagnostic armed; official PnL waits ${this.config.execution.simulatedLandingDelayMs}ms and a confirmed pool event.`
         : reasons.join('\n'),
       color: decision === 'QUALIFY' ? 0x45e6b0 : 0xffc857,
       fields: [
         { name: 'Opening reserve', value: quoteReserveSol == null ? 'Unavailable' : formatSol(quoteReserveSol), inline: true },
         { name: 'Largest opening swap', value: formatSol(candidate.largestOpeningSwapSol), inline: true },
         { name: 'Independent buyers', value: String(candidate.buyers.size), inline: true },
+        { name: 'Migration resolve latency', value: candidate.migrationResolutionMs == null ? 'Unavailable' : `${candidate.migrationResolutionMs}ms`, inline: true },
         { name: 'Strategy', value: this.config.version },
       ],
     }).catch((error) => this.options.onError?.(error));
@@ -240,6 +421,12 @@ export class PaperEngine {
     this.candidates.delete(candidate.pool);
     await appendJsonl(path.join(this.paperRoot, 'execution-skips.jsonl'), {
       at: Date.now(), version: this.config.version, pool: candidate.pool, mint: candidate.mint, symbol: candidate.symbol, reason,
+      migrationBlockTimeMs: candidate.migrationTime * 1_000,
+      migrationLogReceivedAtMs: candidate.migrationLogReceivedAtMs,
+      migrationResolvedAtMs: candidate.migrationResolvedAtMs,
+      submittedAtMs: candidate.submittedAtMs ?? null,
+      dumpMetrics: candidate.dumpMetricsAtEntry ?? null,
+      competition: candidate.latestEvent ? this.competitionStats(candidate, candidate.latestEvent.receivedSequence) : null,
     });
     await this.persist();
     void postDiscord('decisionLog', {
@@ -258,12 +445,24 @@ export class PaperEngine {
       id: `${candidate.pool}:${event.receivedSequence}:${label}`, cohort: label, pool: candidate.pool, mint: candidate.mint,
       name: candidate.name, symbol: candidate.symbol, entryTimestamp: event.timestamp, entryAtMs: event.receivedAtMs,
       entryIso: new Date(event.receivedAtMs).toISOString(), entrySlot: event.slot, entryAfterSignature: event.signature,
-      entryReceivedSequence: event.receivedSequence, simulatedLandingDelayMs: event.receivedAtMs - candidate.decidedAtMs,
+      migrationBlockTimeMs: candidate.migrationTime * 1_000,
+      migrationLogReceivedAtMs: candidate.migrationLogReceivedAtMs,
+      migrationResolvedAtMs: candidate.migrationResolvedAtMs,
+      migrationResolutionMs: candidate.migrationResolutionMs,
+      decisionAtMs: candidate.decidedAtMs,
+      submittedAtMs: candidate.submittedAtMs,
+      fastPathTargetAtMs: candidate.fastPathNotBeforeMs,
+      conservativeLandingTargetAtMs: candidate.landingNotBeforeMs,
+      entryReceivedSequence: event.receivedSequence, simulatedLandingDelayMs: event.receivedAtMs - candidate.submittedAtMs,
+      competitionBeforeEntry: candidate.competitionAtEntry,
+      fastPathDiagnostic: candidate.fastPathDiagnostic,
+      dumpMetricsAtEntry: candidate.dumpMetricsAtEntry,
       sizeSol, tokensRaw: quote.tokensRaw, tokens: quote.tokens, supplyRaw, solUsdAtEntry: solUsd,
       entryAveragePriceSol: quote.spendSol / quote.tokens, entryMarketCapSol: entryMarketCap.sol,
       entryMarketCapUsd: entryMarketCap.usd, entrySpotMarketCapSol,
       entrySpotMarketCapUsd: Number.isFinite(solUsd) ? entrySpotMarketCapSol * solUsd : null,
       marketState, entryFeeBasisPoints: quote.totalFeeBasisPoints, externalSwaps: 0,
+      externalBuySol: 0, externalSellSol: 0, largestExternalBuySol: 0, largestExternalSellSol: 0,
       lastSwapTimestamp: event.timestamp, lastSwapReceivedAtMs: event.receivedAtMs, status: 'OPEN',
     };
   }
@@ -273,7 +472,11 @@ export class PaperEngine {
     const reasons = [];
     if (Object.keys(this.state.openPositions).length >= this.config.maxConcurrentPositions) reasons.push('maximum concurrent positions reached at landing');
     if (this.state.availableBankrollSol < this.config.positionSizeSol + this.config.fixedCostPerTransactionSol) reasons.push('insufficient baseline bankroll at landing');
+    candidate.dumpMetricsAtEntry = this.dumpMetrics(candidate, event.receivedAtMs);
+    reasons.push(...candidate.dumpMetricsAtEntry.reasons);
     if (reasons.length) return this.skipExecution(candidate, reasons.join('; '));
+    candidate.competitionAtEntry = this.competitionStats(candidate, event.receivedSequence);
+    if (!candidate.fastPathDiagnostic) this.captureFastPathDiagnostic(candidate, event);
     let position;
     let shadows;
     try {
@@ -297,6 +500,8 @@ export class PaperEngine {
         { name: 'Average fill MC', value: formatMarketCap(position.entryMarketCapUsd, position.entryMarketCapSol), inline: true },
         { name: 'Spot MC before fill', value: formatMarketCap(position.entrySpotMarketCapUsd, position.entrySpotMarketCapSol), inline: true },
         { name: 'Landing delay', value: `${position.simulatedLandingDelayMs}ms`, inline: true },
+        { name: 'Observed ahead of us', value: `${position.competitionBeforeEntry.observedBuys} buys · ${position.competitionBeforeEntry.buySol.toFixed(3)} SOL`, inline: true },
+        { name: '170ms diagnostic MC', value: formatMarketCap(position.fastPathDiagnostic?.averageFillMarketCapUsd, position.fastPathDiagnostic?.averageFillMarketCapSol), inline: true },
         { name: 'Bankroll available', value: formatSol(this.state.availableBankrollSol), inline: true },
         { name: 'Size shadows', value: this.shadowSizes.map((size) => `${size} SOL`).join(' · ') },
         { name: 'Mint', value: `\`${candidate.mint}\`` },
@@ -319,7 +524,7 @@ export class PaperEngine {
   }
 
   async evaluate(position, atMs, source) {
-    if (position.closing) return;
+    if (position.closing || position.pendingExit) return;
     let mark;
     try { mark = this.mark(position); } catch { return; }
     const ageSeconds = (atMs - position.entryAtMs) / 1_000;
@@ -327,11 +532,11 @@ export class PaperEngine {
     if (mark.returnPct >= this.config.takeProfitPct) reason = 'TAKE_PROFIT';
     else if (mark.returnPct <= -this.config.stopLossPct) reason = 'STOP_LOSS';
     else if (ageSeconds >= this.config.timeoutSeconds) reason = 'TIMEOUT';
-    if (reason) await this.closePosition(position, atMs, reason, source, mark);
+    if (reason) await this.beginExit(position, atMs, reason, source, mark);
   }
 
   async evaluateShadow(cohort, position, atMs, source) {
-    if (position.closing) return;
+    if (position.closing || position.pendingExit) return;
     let mark;
     try { mark = this.mark(position); } catch { return; }
     const ageSeconds = (atMs - position.entryAtMs) / 1_000;
@@ -339,15 +544,66 @@ export class PaperEngine {
     if (mark.returnPct >= this.config.takeProfitPct) reason = 'TAKE_PROFIT';
     else if (mark.returnPct <= -this.config.stopLossPct) reason = 'STOP_LOSS';
     else if (ageSeconds >= this.config.timeoutSeconds) reason = 'TIMEOUT';
-    if (reason) await this.closeShadowPosition(cohort, position, atMs, reason, source, mark);
+    if (reason) await this.beginShadowExit(cohort, position, atMs, reason, source, mark);
+  }
+
+  pendingExit(reason, source, atMs, position, mark) {
+    return {
+      reason,
+      source,
+      triggerAtMs: atMs,
+      triggerIso: new Date(atMs).toISOString(),
+      triggerReceivedSequence: position.marketState.sourceReceivedSequence ?? position.entryReceivedSequence,
+      triggerReturnPct: round(mark.returnPct, 3),
+      landingTargetAtMs: atMs + this.config.execution.simulatedExitLandingDelayMs,
+      competition: {
+        observedEvents: 0, observedBuys: 0, observedSells: 0,
+        buySol: 0, sellSol: 0, largestBuySol: 0, largestSellSol: 0,
+      },
+    };
+  }
+
+  async beginExit(position, atMs, reason, source, mark) {
+    position.pendingExit = this.pendingExit(reason, source, atMs, position, mark);
+    await this.persist();
+    const delay = Math.max(0, position.pendingExit.landingTargetAtMs - Date.now());
+    setTimeout(() => this.finalizeExit(position.pool, position.id).catch((error) => this.options.onError?.(error)), delay).unref();
+  }
+
+  async beginShadowExit(cohort, position, atMs, reason, source, mark) {
+    position.pendingExit = this.pendingExit(reason, source, atMs, position, mark);
+    await this.persistShadows();
+    const delay = Math.max(0, position.pendingExit.landingTargetAtMs - Date.now());
+    setTimeout(() => this.finalizeShadowExit(cohort.sizeSol, position.pool, position.id).catch((error) => this.options.onError?.(error)), delay).unref();
+  }
+
+  async finalizeExit(pool, id) {
+    const position = this.state.openPositions[pool];
+    if (!position || position.id !== id || !position.pendingExit) return;
+    const mark = this.mark(position);
+    await this.closePosition(position, Date.now(), position.pendingExit.reason, 'modeled-exit-landing', mark);
+  }
+
+  async finalizeShadowExit(sizeSol, pool, id) {
+    const cohort = this.shadowState.cohorts[String(sizeSol)];
+    const position = cohort?.openPositions?.[pool];
+    if (!position || position.id !== id || !position.pendingExit) return;
+    const mark = this.mark(position);
+    await this.closeShadowPosition(cohort, position, Date.now(), position.pendingExit.reason, 'modeled-exit-landing', mark);
   }
 
   resultFrom(position, atMs, reason, source, mark) {
+    const pendingExit = position.pendingExit ?? null;
     return {
       ...position, marketState: undefined, status: 'CLOSED', exitAtMs: atMs,
       exitTimestamp: position.marketState.sourceTimestamp, exitIso: new Date(atMs).toISOString(),
       exitSlot: position.marketState.sourceSlot, exitAfterSignature: position.marketState.sourceSignature,
       exitReason: reason, exitSource: source, holdSeconds: round((atMs - position.entryAtMs) / 1_000, 3),
+      exitTriggeredAtMs: pendingExit?.triggerAtMs ?? atMs,
+      exitTriggeredIso: pendingExit?.triggerIso ?? new Date(atMs).toISOString(),
+      exitLandingTargetAtMs: pendingExit?.landingTargetAtMs ?? atMs,
+      simulatedExitLandingDelayMs: pendingExit ? atMs - pendingExit.triggerAtMs : 0,
+      competitionBeforeExit: pendingExit?.competition ?? null,
       grossProceedsSol: round(mark.proceeds), pnlSol: round(mark.pnlSol), returnPct: round(mark.returnPct, 3),
       exitAveragePriceSol: mark.exitAveragePriceSol, exitMarketCapSol: mark.exitMarketCapSol,
       exitMarketCapUsd: mark.exitMarketCapUsd, exitSpotMarketCapSol: mark.exitSpotMarketCapSol,
@@ -401,7 +657,28 @@ export class PaperEngine {
         { name: 'Observed spot MC before entry', value: formatMarketCap(position.entrySpotMarketCapUsd, position.entrySpotMarketCapSol), inline: true },
         { name: 'Observed spot MC before exit', value: formatMarketCap(result.exitSpotMarketCapUsd, result.exitSpotMarketCapSol), inline: true },
         { name: 'Outcome', value: `${result.pnlSol >= 0 ? '+' : ''}${result.pnlSol.toFixed(4)} SOL (${result.returnPct.toFixed(2)}%)` },
-        { name: 'Execution evidence', value: `Entry after slot ${position.entrySlot} · ${position.simulatedLandingDelayMs}ms modeled delay · ${position.externalSwaps} later swaps` },
+        { name: 'Lifecycle timestamps', value: [
+          `Migration block (coarse): ${new Date(position.migrationBlockTimeMs).toISOString()}`,
+          `Migration log received: ${position.migrationLogReceivedAtMs ? new Date(position.migrationLogReceivedAtMs).toISOString() : 'Unavailable'}`,
+          `Migration resolved: ${position.migrationResolvedAtMs ? new Date(position.migrationResolvedAtMs).toISOString() : 'Unavailable'}`,
+          `Signal/submission: ${new Date(position.submittedAtMs).toISOString()}`,
+          `Modeled entry fill: ${position.entryIso}`,
+          `Exit triggered: ${result.exitTriggeredIso}`,
+          `Modeled exit fill: ${result.exitIso}`,
+        ].join('\n') },
+        { name: 'Pipeline latency', value: [
+          `Block→log: ~${position.migrationLogReceivedAtMs == null ? '?' : position.migrationLogReceivedAtMs - position.migrationBlockTimeMs}ms (block time is second-granularity)`,
+          `Log→resolved: ${position.migrationResolutionMs ?? '?'}ms`,
+          `Resolved→signal: ${position.migrationResolvedAtMs == null ? '?' : position.submittedAtMs - position.migrationResolvedAtMs}ms`,
+          `Signal→entry: ${position.simulatedLandingDelayMs}ms`,
+          `Exit trigger→fill: ${result.simulatedExitLandingDelayMs}ms`,
+        ].join('\n') },
+        { name: 'Execution evidence', value: `Entry after slot ${position.entrySlot} · entry ${position.simulatedLandingDelayMs}ms · exit ${result.simulatedExitLandingDelayMs}ms · ${position.externalSwaps} later swaps` },
+        { name: 'Competition before entry', value: `${formatCompetition(position.competitionBeforeEntry)} · estimated buy position #${position.competitionBeforeEntry?.estimatedPositionBehindObservedBuys ?? '?'}` },
+        { name: 'Top wallets buying ahead', value: formatTopWallets(position.competitionBeforeEntry?.topObservedBuyers) },
+        { name: 'Competition before exit', value: formatCompetition(result.competitionBeforeExit) },
+        { name: 'Dump guard at entry', value: `${position.dumpMetricsAtEntry?.peakDrawdownPct?.toFixed?.(1) ?? '0.0'}% off observed peak · ${Number(position.dumpMetricsAtEntry?.sellSol ?? 0).toFixed(3)} SOL sold in ${position.dumpMetricsAtEntry?.windowMs ?? 1000}ms` },
+        { name: '170ms diagnostic', value: `${formatMarketCap(position.fastPathDiagnostic?.averageFillMarketCapUsd, position.fastPathDiagnostic?.averageFillMarketCapSol)} observed after ${position.fastPathDiagnostic?.observedDelayMs ?? '?'}ms; diagnostic only` },
         { name: 'MC method', value: Number.isFinite(position.solUsdAtEntry) && Number.isFinite(result.solUsdAtExit)
           ? `Average executable fill × supply · SOL/USD entry $${Number(position.solUsdAtEntry).toFixed(2)}, exit $${Number(result.solUsdAtExit).toFixed(2)}`
           : 'Average executable fill × supply (SOL-denominated; USD conversion unavailable)' },

@@ -54,7 +54,7 @@ export async function createPumpDecoders() {
   const migrationInstructions = new Map(pumpIdl.instructions
     .filter((instruction) => instruction.name === 'migrate' || instruction.name === 'migrate_v2')
     .map((instruction) => [discriminatorKey(instruction.discriminator), instruction]));
-  async function resolveMigration(signature) {
+  async function resolveMigration(signature, received = {}) {
     const transaction = await getConfirmedTransaction(signature);
     const top = transaction?.transaction?.message?.instructions ?? [];
     const inner = (transaction?.meta?.innerInstructions ?? []).flatMap((group) => group.instructions ?? []);
@@ -71,26 +71,25 @@ export async function createPumpDecoders() {
       const mint = accounts.mint ?? accounts.base_mint;
       const quoteMint = accounts.wsol_mint ?? accounts.quote_mint;
       if (!mint || !accounts.pool || quoteMint !== WSOL) continue;
-      let coin = null;
-      try {
-        coin = await getJson(`https://frontend-api-v3.pump.fun/coins/${mint}`, { attempts: 3, baseDelayMs: 500 });
-      } catch {}
+      const resolvedAtMs = Date.now();
       return {
         signature,
         slot: transaction.slot,
         blockTime: transaction.blockTime,
+        migrationLogReceivedAtMs: received.receivedAtMs ?? null,
+        migrationLogReceivedSequence: received.receivedSequence ?? null,
+        migrationResolvedAtMs: resolvedAtMs,
+        migrationResolutionMs: received.receivedAtMs == null ? null : resolvedAtMs - received.receivedAtMs,
         instruction: definition.name,
         mint,
         quoteMint,
         pool: accounts.pool,
-        name: coin?.name ?? null,
-        symbol: coin?.symbol ?? null,
-        creator: coin?.creator ?? null,
-        totalSupplyRaw: coin?.total_supply != null ? String(coin.total_supply) : '1000000000000000',
-        solUsd: Number(coin?.usd_market_cap) > 0 && Number(coin?.market_cap) > 0
-          ? Number(coin.usd_market_cap) / Number(coin.market_cap)
-          : null,
-        tokenCreatedTimestamp: coin?.created_timestamp ?? null,
+        name: null,
+        symbol: null,
+        creator: null,
+        totalSupplyRaw: '1000000000000000',
+        solUsd: null,
+        tokenCreatedTimestamp: null,
       };
     }
     return null;

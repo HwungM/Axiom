@@ -1,8 +1,7 @@
 {
-  "version": "paper-v2-authoritative-landing",
-  "status": "SUPERSEDED_BY_V3",
-  "dataDirectory": "paper-v2",
-  "enabled": false,
+  "version": "paper-v3-latency-competition-guard",
+  "dataDirectory": "paper-v3",
+  "enabled": true,
   "frozen": true,
   "startingBankrollSol": 3,
   "positionSizeSol": 0.5,
@@ -13,7 +12,7 @@
     "mode": "matched-signals-authoritative-state"
   },
   "maxConcurrentPositions": 3,
-  "observationWindowSeconds": 5,
+  "observationWindowSeconds": 1,
   "takeProfitPct": 50,
   "stopLossPct": 20,
   "timeoutSeconds": 300,
@@ -26,14 +25,24 @@
     "minimumIndependentBuyers": 1,
     "minimumOpeningSwaps": 1
   },
+  "dumpGuard": {
+    "enabled": true,
+    "windowMs": 1000,
+    "maximumPeakDrawdownPct": 20,
+    "minimumSellPressureSol": 0.5,
+    "maximumSellToBuyRatio": 2
+  },
   "execution": {
+    "fastPathDiagnosticMs": 170,
     "simulatedLandingDelayMs": 1000,
+    "simulatedExitLandingDelayMs": 1000,
     "maximumLandingWaitMs": 5000,
     "requireConfirmedPostDelaySwap": true,
     "authoritativeEventReserves": true,
     "dynamicEventFees": true,
     "includeVirtualQuoteReserves": true,
-    "chargeOwnEntryAndExitImpact": true
+    "chargeOwnEntryAndExitImpact": true,
+    "recordInterveningCompetition": true
   },
-  "note": "V2 replaces stale reconstructed reserve paths with confirmed post-delay PumpSwap event state, event-native fees, virtual reserves and independent executable entry/exit quotes. V1 is retained only as invalidated legacy research."
+  "note": "The official PnL uses a conservative 1,000ms entry and exit landing model. A 170ms Helius-style fast-path snapshot is diagnostic only because transport latency is not guaranteed end-to-end inclusion latency. Active migration dumps are rejected and every intervening wallet/flow is recorded."
 }

@@ -3,7 +3,7 @@ import path from 'node:path';
 import { appendJsonl, readJson, writeJsonAtomic } from './lib/fs-store.mjs';
 
 const dataRoot = path.resolve(process.env.DATA_ROOT ?? 'data');
-const config = JSON.parse(await fs.readFile(path.resolve(process.env.PAPER_CONFIG ?? 'config/paper.v2.json'), 'utf8'));
+const config = JSON.parse(await fs.readFile(path.resolve(process.env.PAPER_CONFIG ?? 'config/paper.v3.json'), 'utf8'));
 const paperRoot = path.join(dataRoot, config.dataDirectory ?? 'paper');
 const stateFile = path.join(paperRoot, 'state.json');
 const state = await readJson(stateFile, null);

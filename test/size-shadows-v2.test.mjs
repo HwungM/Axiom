@@ -5,7 +5,7 @@ import path from 'node:path';
 import test from 'node:test';
 import { PaperEngine } from '../src/paper-engine.mjs';
 
-const config = JSON.parse(await fs.readFile(new URL('../config/paper.v2.json', import.meta.url), 'utf8'));
+const config = JSON.parse(await fs.readFile(new URL('../config/paper.v3.json', import.meta.url), 'utf8'));
 
 test('authoritative baseline and size shadows enter the identical confirmed state', async () => {
   const dataRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'axiom-size-shadows-v2-'));
@@ -32,9 +32,16 @@ test('authoritative baseline and size shadows enter the identical confirmed stat
   };
   const candidate = {
     pool: 'pool-one', mint: 'mint-one', name: 'Test token', symbol: 'TEST', actualState: state,
-    decidedAtMs: 8_500, totalSupplyRaw: 1_000_000_000_000_000, solUsd: 100,
+    migrationTime: 9, migrationLogReceivedAtMs: 9_100, migrationResolvedAtMs: 9_200, migrationResolutionMs: 100,
+    decidedAtMs: 8_500, submittedAtMs: 8_500, fastPathNotBeforeMs: 8_670, landingNotBeforeMs: 9_500,
+    decisionReceivedSequence: 4, events: [], currentDrawdownPct: 0,
+    totalSupplyRaw: 1_000_000_000_000_000, solUsd: 100,
   };
-  const event = { pool: 'pool-one', timestamp: 100, receivedAtMs: 10_000, receivedSequence: 5, slot: 10, signature: 'prior-swap' };
+  const event = {
+    pool: 'pool-one', timestamp: 100, receivedAtMs: 10_000, receivedSequence: 5, slot: 10,
+    signature: 'prior-swap', side: 'buy', user: 'buyer-one', userQuoteAmountRaw: '200000000',
+  };
+  candidate.events.push(event);
   engine.candidates.set(candidate.pool, candidate);
 
   try {
@@ -43,12 +50,47 @@ test('authoritative baseline and size shadows enter the identical confirmed stat
     assert.equal(baseline.sizeSol, 0.5);
     assert.equal(baseline.entryReceivedSequence, 5);
     assert.ok(baseline.entryMarketCapUsd > 0);
+    assert.equal(baseline.competitionBeforeEntry.observedBuys, 1);
+    assert.equal(baseline.competitionBeforeEntry.buySol, 0.2);
+    assert.equal(baseline.fastPathDiagnostic.observedDelayMs, 1_500);
     assert.deepEqual(engine.shadowCohorts().map((cohort) => cohort.openPositions['pool-one'].sizeSol), [1, 1.5, 2]);
     assert.deepEqual(engine.shadowCohorts().map((cohort) => cohort.openPositions['pool-one'].entryReceivedSequence), [5, 5, 5]);
     assert.equal(engine.shadowState.matchedSignals, 1);
+
+    baseline.marketState = {
+      ...baseline.marketState,
+      quoteReserveRaw: '200000000000',
+      sourceTimestamp: 101,
+      sourceReceivedAtMs: 11_000,
+      sourceReceivedSequence: 6,
+    };
+    await engine.evaluate(baseline, 11_000, 'swap');
+    assert.ok(baseline.pendingExit);
+    assert.equal(baseline.pendingExit.landingTargetAtMs, 12_000);
+    assert.ok(engine.state.openPositions['pool-one']);
+    await engine.finalizeExit('pool-one', baseline.id);
+    assert.equal(engine.state.openPositions['pool-one'], undefined);
   } finally {
     if (previousDataRoot == null) delete process.env.DATA_ROOT;
     else process.env.DATA_ROOT = previousDataRoot;
     await fs.rm(dataRoot, { recursive: true, force: true });
   }
+});
+
+test('dump guard detects one-second migration sell pressure', () => {
+  const engine = new PaperEngine(config);
+  const atMs = 10_000;
+  const metrics = engine.dumpMetrics({
+    events: [
+      { side: 'buy', receivedAtMs: 9_500, userQuoteAmountRaw: '100000000' },
+      { side: 'sell', receivedAtMs: 9_700, userQuoteAmountRaw: '600000000' },
+    ],
+    currentDrawdownPct: 25,
+    peakSpotMarketCapSol: 500,
+    currentSpotMarketCapSol: 375,
+  }, atMs);
+
+  assert.equal(metrics.buySol, 0.1);
+  assert.equal(metrics.sellSol, 0.6);
+  assert.ok(metrics.reasons.length >= 1);
 });

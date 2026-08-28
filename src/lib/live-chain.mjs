@@ -116,7 +116,7 @@ export class LiveChain {
     const logs = notification.value?.logs ?? [];
     if (!logs.some((log) => /Program log: Instruction: Migrate(?:V2)?$/i.test(log))) return;
     const signature = notification.value.signature;
-    const migration = await this.decoders.resolveMigration(signature);
+    const migration = await this.decoders.resolveMigration(signature, received);
     if (migration) await this.handlers.onMigration?.(migration);
   }
 
