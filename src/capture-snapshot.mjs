@@ -1,20 +1,18 @@
 import path from 'node:path';
 import { appendJsonl, readJson, writeJsonAtomic } from './lib/fs-store.mjs';
 import { getJson, sleep } from './lib/http.mjs';
-import { postDiscord } from './lib/discord.mjs';
 
 const DATA_ROOT = path.resolve(process.env.DATA_ROOT ?? 'data');
 const WSOL = 'So11111111111111111111111111111111111111112';
 const pageCount = Number(process.env.GECKO_PAGES ?? 3);
 const pagePauseMs = Number(process.env.GECKO_PAGE_PAUSE_MS ?? 7_000);
-const capturedAt = Date.now();
 
 function finiteNumber(value) {
   const number = Number(value);
   return Number.isFinite(number) ? number : null;
 }
 
-async function fetchNewPumpSwapPools() {
+async function fetchNewPumpSwapPools(capturedAt) {
   const pools = new Map();
   for (let page = 1; page <= pageCount; page += 1) {
     const endpoint = `https://api.geckoterminal.com/api/v2/networks/solana/new_pools?page=${page}&include=base_token,quote_token,dex`;
@@ -76,7 +74,8 @@ async function enrichWithPumpState(pool) {
 }
 
 export async function captureSnapshot() {
-  const pools = await fetchNewPumpSwapPools();
+  const capturedAt = Date.now();
+  const pools = await fetchNewPumpSwapPools(capturedAt);
   const entries = [];
   for (let index = 0; index < pools.length; index += 10) {
     entries.push(...await Promise.all(pools.slice(index, index + 10).map(enrichWithPumpState)));
@@ -93,23 +92,6 @@ export async function captureSnapshot() {
       await appendJsonl(path.join(DATA_ROOT, 'events', 'first-seen-pools.jsonl'), entry);
       if (entry.coin?.canonicalPumpMigration) {
         await appendJsonl(path.join(DATA_ROOT, 'events', 'canonical-migrations.jsonl'), entry);
-        try {
-          await postDiscord('migrationFeed', {
-            title: `${entry.coin.symbol ?? 'UNKNOWN'} migrated to PumpSwap`,
-            description: entry.coin.name ?? 'Unnamed token',
-            color: 0x45e6b0,
-            fields: [
-              { name: 'Mint', value: `\`${entry.mint}\`` },
-              { name: 'Pool', value: `\`${entry.pool}\`` },
-              { name: 'First observed age', value: `${Math.round(entry.ageSeconds ?? 0)}s`, inline: true },
-              { name: 'FDV', value: entry.fdvUsd == null ? 'Unavailable' : `$${Math.round(entry.fdvUsd).toLocaleString()}`, inline: true },
-              { name: 'Liquidity', value: entry.reserveUsd == null ? 'Unavailable' : `$${Math.round(entry.reserveUsd).toLocaleString()}`, inline: true },
-              { name: 'Decision', value: 'OBSERVE ONLY — exact opening-flow selector not active' },
-            ],
-          });
-        } catch (error) {
-          console.error(`Discord migration notification failed: ${error?.message ?? error}`);
-        }
       }
     }
   }

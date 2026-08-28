@@ -4,7 +4,7 @@ An append-only research harness for discovering and forward-testing Solana memec
 
 ## Current phase
 
-`paper-v0-observation-only` records the complete visible candidate universe before we finish the selector. This prevents hindsight: skipped migrations and failures are retained alongside winners.
+`paper-v1-canonical-migrations` is the first frozen forward hypothesis. A live Solana WebSocket watches Pump migrations and PumpSwap events, records every decision, and maintains a counterfactual 3 SOL paper account.
 
 Agreed experimental account:
 
@@ -14,7 +14,7 @@ Agreed experimental account:
 - initial exit family: +50% take-profit / −20% stop / 300-second timeout
 - pool impact, platform/pool fees, fixed transaction costs, failed entries and failed exits must be charged
 
-Those exit values are hypotheses, not a live recommendation. The collector will not emit paper orders until exact on-chain opening-flow fields and executable reserve states are present.
+Those exit values are hypotheses, not a live recommendation. Paper entries use observed PumpSwap reserves, replay external swap inputs through our counterfactual pool, charge our pool impact and fees, and never submit a transaction.
 
 ## Run it
 
@@ -51,7 +51,7 @@ An intentionally guarded smoke test can send one clearly labeled connection mess
 npm run discord:smoke -- --send
 ```
 
-The monitor currently posts startup/shutdown/heartbeat status, collection failures and newly detected canonical migrations. Decision, paper-trade and case-study messages will activate only when those corresponding engines are implemented; they will not receive fabricated placeholder events.
+The monitor posts startup/shutdown/heartbeat status, exact migration events, every selector decision, paper entries/exits, collection failures, daily reports and closed-trade case studies.
 
 ## Data contract
 

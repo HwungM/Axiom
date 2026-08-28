@@ -1,0 +1,29 @@
+{
+  "version": "paper-v1-canonical-migrations",
+  "enabled": true,
+  "frozen": true,
+  "startingBankrollSol": 3,
+  "positionSizeSol": 0.5,
+  "maxConcurrentPositions": 3,
+  "observationWindowSeconds": 5,
+  "takeProfitPct": 50,
+  "stopLossPct": 20,
+  "timeoutSeconds": 300,
+  "fixedCostPerTransactionSol": 0.0032,
+  "poolFeeRate": 0.0125,
+  "selector": {
+    "canonicalPumpMigration": true,
+    "minimumQuoteReserveSol": 20,
+    "maximumQuoteReserveSol": 150,
+    "maximumLargestOpeningSwapSol": 10,
+    "minimumIndependentBuyers": 1,
+    "minimumOpeningSwaps": 1
+  },
+  "execution": {
+    "entryAtDecisionState": true,
+    "replayExternalSwapInputs": true,
+    "chargeOwnPoolImpact": true,
+    "skipWithoutExactReserveState": true
+  },
+  "note": "Frozen first forward hypothesis: canonical Pump migrations with standard-sized opening liquidity and no abnormal >10 SOL opening swap. Every pass and rejection is retained."
+}

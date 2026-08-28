@@ -3,6 +3,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 const config = JSON.parse(await fs.readFile(new URL('../config/paper.v0.json', import.meta.url), 'utf8'));
+const livePaperConfig = JSON.parse(await fs.readFile(new URL('../config/paper.v1.json', import.meta.url), 'utf8'));
 
 test('paper v0 preserves the agreed bankroll and risk experiment', () => {
   assert.equal(config.startingBankrollSol, 3);
@@ -12,6 +13,16 @@ test('paper v0 preserves the agreed bankroll and risk experiment', () => {
   assert.equal(config.timeoutSeconds, 300);
 });
 
+test('paper v1 is enabled with the frozen first forward selector', () => {
+  assert.equal(livePaperConfig.enabled, true);
+  assert.equal(livePaperConfig.frozen, true);
+  assert.equal(livePaperConfig.startingBankrollSol, 3);
+  assert.equal(livePaperConfig.positionSizeSol, 0.5);
+  assert.equal(livePaperConfig.observationWindowSeconds, 5);
+  assert.equal(livePaperConfig.selector.maximumLargestOpeningSwapSol, 10);
+  assert.equal(livePaperConfig.execution.chargeOwnPoolImpact, true);
+});
+
 test('paper v0 does not invent an unfinished selection rule', () => {
   assert.equal(config.frozen, true);
   assert.equal(config.selector.canonicalPumpMigration, true);
@@ -19,4 +30,3 @@ test('paper v0 does not invent an unfinished selection rule', () => {
   assert.equal(config.selector.minimumIndependentBuyers, null);
   assert.equal(config.selector.minimumNetOpeningFlowSol, null);
 });
-
