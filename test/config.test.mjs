@@ -5,7 +5,8 @@ import assert from 'node:assert/strict';
 const config = JSON.parse(await fs.readFile(new URL('../config/paper.v0.json', import.meta.url), 'utf8'));
 const legacyPaperConfig = JSON.parse(await fs.readFile(new URL('../config/paper.v1.json', import.meta.url), 'utf8'));
 const supersededPaperConfig = JSON.parse(await fs.readFile(new URL('../config/paper.v2.json', import.meta.url), 'utf8'));
-const livePaperConfig = JSON.parse(await fs.readFile(new URL('../config/paper.v3.json', import.meta.url), 'utf8'));
+const supersededPaperV3 = JSON.parse(await fs.readFile(new URL('../config/paper.v3.json', import.meta.url), 'utf8'));
+const livePaperConfig = JSON.parse(await fs.readFile(new URL('../config/paper.v4.json', import.meta.url), 'utf8'));
 
 test('paper v0 preserves the agreed bankroll and risk experiment', () => {
   assert.equal(config.startingBankrollSol, 3);
@@ -15,7 +16,7 @@ test('paper v0 preserves the agreed bankroll and risk experiment', () => {
   assert.equal(config.timeoutSeconds, 300);
 });
 
-test('paper v3 is enabled with the frozen first forward selector', () => {
+test('paper v4 is enabled with the frozen first forward selector', () => {
   assert.equal(livePaperConfig.enabled, true);
   assert.equal(livePaperConfig.frozen, true);
   assert.equal(livePaperConfig.startingBankrollSol, 3);
@@ -29,15 +30,29 @@ test('paper v3 is enabled with the frozen first forward selector', () => {
   assert.equal(livePaperConfig.execution.simulatedExitLandingDelayMs, 1000);
   assert.equal(livePaperConfig.execution.fastPathDiagnosticMs, 170);
   assert.equal(livePaperConfig.dumpGuard.enabled, true);
-  assert.equal(livePaperConfig.dataDirectory, 'paper-v3-1');
+  assert.equal(livePaperConfig.dataDirectory, 'paper-v4');
 });
 
-test('paper v3 preserves the 0.5 SOL baseline and declares matched size shadows', () => {
+test('paper v4 preserves the 0.5 SOL baseline and declares matched size shadows', () => {
   assert.equal(livePaperConfig.positionSizeSol, 0.5);
   assert.deepEqual(livePaperConfig.shadowPositionSizesSol, [1, 1.5, 2]);
   assert.equal(livePaperConfig.shadowComparison.minimumCompletedTrades, 50);
   assert.equal(livePaperConfig.shadowComparison.targetCompletedTrades, 100);
   assert.equal(livePaperConfig.shadowComparison.mode, 'matched-signals-authoritative-state');
+});
+
+test('paper v4 declares an independent matched FAST-170 account', () => {
+  assert.equal(livePaperConfig.latencyAccount.enabled, true);
+  assert.equal(livePaperConfig.latencyAccount.name, 'FAST-170');
+  assert.equal(livePaperConfig.latencyAccount.startingBankrollSol, 3);
+  assert.equal(livePaperConfig.latencyAccount.positionSizeSol, 0.5);
+  assert.equal(livePaperConfig.latencyAccount.entryTargetMs, 170);
+  assert.equal(livePaperConfig.latencyAccount.exitTargetMs, 170);
+});
+
+test('paper v3.1 is disabled after adding matched latency accounts', () => {
+  assert.equal(supersededPaperV3.status, 'SUPERSEDED_BY_V4');
+  assert.equal(supersededPaperV3.enabled, false);
 });
 
 test('paper v2 is disabled after the latency and competition audit', () => {

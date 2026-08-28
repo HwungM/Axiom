@@ -3,7 +3,7 @@ import path from 'node:path';
 import { appendJsonl, readJson, writeJsonAtomic } from './lib/fs-store.mjs';
 
 const dataRoot = path.resolve(process.env.DATA_ROOT ?? 'data');
-const config = JSON.parse(await fs.readFile(path.resolve(process.env.PAPER_CONFIG ?? 'config/paper.v3.json'), 'utf8'));
+const config = JSON.parse(await fs.readFile(path.resolve(process.env.PAPER_CONFIG ?? 'config/paper.v4.json'), 'utf8'));
 const paperRoot = path.join(dataRoot, config.dataDirectory ?? 'paper');
 const stateFile = path.join(paperRoot, 'state.json');
 const state = await readJson(stateFile, null);
@@ -12,6 +12,9 @@ if (!state) {
   process.exit(0);
 }
 if (Object.keys(state.openPositions ?? {}).length > 0) throw new Error('Refusing to reconcile while paper positions are open');
+const latencyStateFile = path.join(paperRoot, 'latency-account-state.json');
+const initialLatencyState = await readJson(latencyStateFile, null);
+if (Object.keys(initialLatencyState?.openPositions ?? {}).length > 0) throw new Error('Refusing to reconcile while FAST-170 positions are open');
 
 async function readJsonl(filename) {
   try {
@@ -71,6 +74,35 @@ for (const exit of excludedExits) {
   });
 }
 await writeJsonAtomic(stateFile, state);
+const latencyState = initialLatencyState;
+let latencySummary = { status: 'NOT_STARTED' };
+if (latencyState) {
+  const latencyEntries = await readJsonl(path.join(paperRoot, 'latency-account-entries.jsonl'));
+  const latencyExits = await readJsonl(path.join(paperRoot, 'latency-account-exits.jsonl'));
+  const latencyInvalidated = await readJsonl(path.join(paperRoot, 'latency-account-invalidated.jsonl'));
+  const latencySkips = await readJsonl(path.join(paperRoot, 'latency-account-skips.jsonl'));
+  const validEntryIds = new Set(latencyEntries.map((row) => row.id));
+  const invalidEntryIds = new Set(latencyInvalidated.map((row) => row.id));
+  const validLatencyExits = latencyExits.filter((row) => validEntryIds.has(row.id) && !invalidEntryIds.has(row.id));
+  const latencyPnl = validLatencyExits.reduce((sum, row) => sum + row.pnlSol, 0);
+  latencyState.availableBankrollSol = latencyState.startingBankrollSol + latencyPnl;
+  latencyState.realizedPnlSol = latencyPnl;
+  latencyState.entered = new Set(latencyEntries.map((row) => row.pool)).size;
+  latencyState.skipped = latencySkips.length;
+  latencyState.completedTrades = validLatencyExits.length;
+  latencyState.wins = validLatencyExits.filter((row) => row.pnlSol > 0).length;
+  latencyState.losses = validLatencyExits.filter((row) => row.pnlSol <= 0).length;
+  latencyState.invalidatedTrades = invalidEntryIds.size;
+  latencyState.reconciledAt = Date.now();
+  await writeJsonAtomic(latencyStateFile, latencyState);
+  latencySummary = {
+    account: config.latencyAccount?.name,
+    validExits: validLatencyExits.length,
+    realizedPnlSol: latencyPnl,
+    bankrollSol: latencyState.availableBankrollSol,
+    invalidatedTrades: latencyState.invalidatedTrades,
+  };
+}
 console.log(JSON.stringify({
   uniqueDecisions: uniqueDecisions.length,
   duplicateDecisions: duplicateDecisions.length,
@@ -79,4 +111,5 @@ console.log(JSON.stringify({
   realizedPnlSol,
   bankrollSol: state.availableBankrollSol,
   invalidatedTrades: state.invalidatedTrades,
+  latencyAccount: latencySummary,
 }, null, 2));

@@ -28,7 +28,7 @@ const formatTopWallets = (rows) => rows?.length
 
 export class PaperEngine {
   static async create(options = {}) {
-    const configPath = path.resolve(process.env.PAPER_CONFIG ?? 'config/paper.v3.json');
+    const configPath = path.resolve(process.env.PAPER_CONFIG ?? 'config/paper.v4.json');
     const config = JSON.parse(await fs.readFile(configPath, 'utf8'));
     const engine = new PaperEngine(config, options);
     await engine.restore();
@@ -42,6 +42,8 @@ export class PaperEngine {
     this.paperRoot = path.join(this.dataRoot, config.dataDirectory ?? 'paper');
     this.stateFile = path.join(this.paperRoot, 'state.json');
     this.shadowStateFile = path.join(this.paperRoot, 'size-shadow-state.json');
+    this.latencyStateFile = path.join(this.paperRoot, 'latency-account-state.json');
+    this.latencyAccount = config.latencyAccount?.enabled ? config.latencyAccount : null;
     this.shadowSizes = [...new Set(config.shadowPositionSizesSol ?? [])]
       .map(Number).filter((size) => Number.isFinite(size) && size > 0 && size !== config.positionSizeSol)
       .sort((a, b) => a - b);
@@ -73,9 +75,18 @@ export class PaperEngine {
         sizeSol, realizedPnlSol: 0, completedTrades: 0, wins: 0, losses: 0, invalidatedTrades: 0, openPositions: {},
       };
     }
+    this.latencyState = await readJson(this.latencyStateFile, {
+      version: `${this.config.version}-${this.latencyAccount?.name ?? 'FAST'}`,
+      startedAt: Date.now(), startingBankrollSol: this.latencyAccount?.startingBankrollSol ?? 3,
+      availableBankrollSol: this.latencyAccount?.startingBankrollSol ?? 3, realizedPnlSol: 0,
+      openPositions: {}, matchedSignals: 0, entered: 0, skipped: 0, completedTrades: 0,
+      wins: 0, losses: 0, invalidatedTrades: 0,
+    });
+    this.latencyState.openPositions ??= {};
     if (Object.keys(this.state.openPositions).length) await this.invalidateOpenPositions('PROCESS_RESTART_DATA_GAP');
     if (this.shadowOpenPositionCount()) await this.invalidateShadowOpenPositions('PROCESS_RESTART_DATA_GAP');
-    await Promise.all([this.persist(), this.persistShadows(), this.refreshSolPrice()]);
+    if (Object.keys(this.latencyState.openPositions).length) await this.invalidateLatencyOpenPositions('PROCESS_RESTART_DATA_GAP');
+    await Promise.all([this.persist(), this.persistShadows(), this.persistLatency(), this.refreshSolPrice()]);
     this.timer = setInterval(() => this.tick().catch((error) => this.options.onError?.(error)), 1_000);
     this.priceTimer = setInterval(() => this.refreshSolPrice().catch((error) => this.options.onError?.(error)), 15_000);
     this.timer.unref();
@@ -100,6 +111,12 @@ export class PaperEngine {
     await writeJsonAtomic(this.shadowStateFile, this.shadowState);
   }
 
+  async persistLatency() {
+    this.latencyState.updatedAt = Date.now();
+    this.latencyState.updatedIso = new Date(this.latencyState.updatedAt).toISOString();
+    await writeJsonAtomic(this.latencyStateFile, this.latencyState);
+  }
+
   shadowCohorts() { return Object.values(this.shadowState.cohorts).sort((a, b) => a.sizeSol - b.sizeSol); }
   shadowOpenPositionCount() { return this.shadowCohorts().reduce((sum, cohort) => sum + Object.keys(cohort.openPositions ?? {}).length, 0); }
   shadowPositionsForPool(pool) {
@@ -118,7 +135,7 @@ export class PaperEngine {
       events: [], droppedEvents: 0, preMigrationDroppedEvents: this.preMigrationDropped.get(migration.pool) ?? 0,
       actualState: null, buyers: new Set(), openingBuysSol: 0, openingSellsSol: 0,
       largestOpeningSwapSol: 0, peakSpotMarketCapSol: null, currentSpotMarketCapSol: null,
-      currentDrawdownPct: 0, decided: false, approved: false, fastPathDiagnostic: null,
+      currentDrawdownPct: 0, decided: false, approved: false, fastPathDiagnostic: null, fastPathComplete: false,
     };
     this.candidates.set(migration.pool, candidate);
     for (const event of this.preMigrationEvents.get(migration.pool) ?? []) this.observeCandidate(candidate, event);
@@ -299,6 +316,16 @@ export class PaperEngine {
       this.recordPositionFlow(shadow, event);
       await this.evaluateShadow(cohort, shadow, event.receivedAtMs, 'swap');
     }
+    const latencyPosition = this.latencyState.openPositions[event.pool];
+    if (latencyPosition && event.receivedSequence > latencyPosition.entryReceivedSequence) {
+      relevant = true;
+      latencyPosition.marketState = marketStateAfterEvent(event, latencyPosition.supplyRaw);
+      latencyPosition.lastSwapTimestamp = event.timestamp;
+      latencyPosition.lastSwapReceivedAtMs = event.receivedAtMs;
+      latencyPosition.externalSwaps += 1;
+      this.recordPositionFlow(latencyPosition, event);
+      await this.evaluateLatency(latencyPosition, event.receivedAtMs, 'swap');
+    }
     const candidate = this.candidates.get(event.pool);
     if (candidate) {
       relevant = true;
@@ -306,8 +333,11 @@ export class PaperEngine {
       if (candidate.approved && !candidate.fastPathDiagnostic && event.receivedAtMs >= candidate.fastPathNotBeforeMs) {
         this.captureFastPathDiagnostic(candidate, event);
       }
+      if (candidate.approved && !candidate.fastPathComplete && event.receivedAtMs >= candidate.fastPathNotBeforeMs) {
+        await this.executeLatencyCandidate(candidate, event);
+      }
       if (candidate.approved && event.receivedAtMs >= candidate.landingNotBeforeMs) await this.executeCandidate(candidate, event);
-    } else if (!position && shadows.length === 0) this.bufferPreMigration(event);
+    } else if (!position && !latencyPosition && shadows.length === 0) this.bufferPreMigration(event);
     if (relevant) {
       this.eventJournalQueue = this.eventJournalQueue
         .then(() => appendJsonl(path.join(this.dataRoot, 'events', 'pumpswap-swaps.jsonl'), event))
@@ -391,14 +421,15 @@ export class PaperEngine {
       this.candidates.delete(pool);
     } else {
       candidate.approved = true;
+      if (this.latencyAccount) this.latencyState.matchedSignals += 1;
       const expiresAt = candidate.landingNotBeforeMs + this.config.execution.maximumLandingWaitMs;
       setTimeout(() => this.expireCandidate(pool).catch((error) => this.options.onError?.(error)), Math.max(0, expiresAt - Date.now())).unref();
     }
-    await this.persist();
+    await Promise.all([this.persist(), this.persistLatency()]);
     void postDiscord('decisionLog', {
       title: `${decision}: ${candidate.symbol ?? candidate.mint.slice(0, 8)}`,
       description: decision === 'QUALIFY'
-        ? `Selector passed. 170ms fast-path diagnostic armed; official PnL waits ${this.config.execution.simulatedLandingDelayMs}ms and a confirmed pool event.`
+        ? `Selector passed. FAST-170 and SAFE-1000 accounts are independently waiting for their authoritative post-target states.`
         : reasons.join('\n'),
       color: decision === 'QUALIFY' ? 0x45e6b0 : 0xffc857,
       fields: [
@@ -413,7 +444,9 @@ export class PaperEngine {
 
   async expireCandidate(pool) {
     const candidate = this.candidates.get(pool);
-    if (candidate?.approved) await this.skipExecution(candidate, 'no confirmed post-delay swap arrived inside the landing window');
+    if (!candidate?.approved) return;
+    if (!candidate.fastPathComplete) await this.skipLatencyCandidate(candidate, 'no authoritative event arrived inside the FAST-170 landing window');
+    if (this.candidates.has(pool)) await this.skipExecution(candidate, 'no confirmed post-delay swap arrived inside the SAFE-1000 landing window');
   }
 
   async skipExecution(candidate, reason) {
@@ -434,7 +467,7 @@ export class PaperEngine {
     }).catch((error) => this.options.onError?.(error));
   }
 
-  createPosition(candidate, event, sizeSol, label) {
+  createPosition(candidate, event, sizeSol, label, evidence = {}) {
     const marketState = { ...candidate.actualState };
     const quote = quoteBuyWithSol(marketState, sizeSol);
     const supplyRaw = marketState.baseSupplyRaw;
@@ -454,9 +487,12 @@ export class PaperEngine {
       fastPathTargetAtMs: candidate.fastPathNotBeforeMs,
       conservativeLandingTargetAtMs: candidate.landingNotBeforeMs,
       entryReceivedSequence: event.receivedSequence, simulatedLandingDelayMs: event.receivedAtMs - candidate.submittedAtMs,
-      competitionBeforeEntry: candidate.competitionAtEntry,
-      fastPathDiagnostic: candidate.fastPathDiagnostic,
-      dumpMetricsAtEntry: candidate.dumpMetricsAtEntry,
+      modeledEntryTargetMs: evidence.entryTargetMs ?? this.config.execution.simulatedLandingDelayMs,
+      modeledExitTargetMs: evidence.exitTargetMs ?? this.config.execution.simulatedExitLandingDelayMs,
+      executionModel: evidence.executionModel ?? 'SAFE-1000',
+      competitionBeforeEntry: evidence.competition ?? candidate.competitionAtEntry,
+      fastPathDiagnostic: evidence.fastPathDiagnostic ?? candidate.fastPathDiagnostic,
+      dumpMetricsAtEntry: evidence.dumpMetrics ?? candidate.dumpMetricsAtEntry,
       sizeSol, tokensRaw: quote.tokensRaw, tokens: quote.tokens, supplyRaw, solUsdAtEntry: solUsd,
       entryAveragePriceSol: quote.spendSol / quote.tokens, entryMarketCapSol: entryMarketCap.sol,
       entryMarketCapUsd: entryMarketCap.usd, entrySpotMarketCapSol,
@@ -465,6 +501,65 @@ export class PaperEngine {
       externalBuySol: 0, externalSellSol: 0, largestExternalBuySol: 0, largestExternalSellSol: 0,
       lastSwapTimestamp: event.timestamp, lastSwapReceivedAtMs: event.receivedAtMs, status: 'OPEN',
     };
+  }
+
+  async skipLatencyCandidate(candidate, reason, evidence = {}) {
+    if (candidate.fastPathComplete) return;
+    candidate.fastPathComplete = true;
+    this.latencyState.skipped += 1;
+    await appendJsonl(path.join(this.paperRoot, 'latency-account-skips.jsonl'), {
+      at: Date.now(), version: this.config.version, account: this.latencyAccount.name,
+      pool: candidate.pool, mint: candidate.mint, symbol: candidate.symbol, reason, ...evidence,
+    });
+    await this.persistLatency();
+  }
+
+  async executeLatencyCandidate(candidate, event) {
+    if (!this.latencyAccount || candidate.fastPathComplete) return;
+    const reasons = [];
+    if (Object.keys(this.latencyState.openPositions).length >= this.config.maxConcurrentPositions) {
+      reasons.push('maximum FAST-170 concurrent positions reached');
+    }
+    if (this.latencyState.availableBankrollSol < this.latencyAccount.positionSizeSol + this.config.fixedCostPerTransactionSol) {
+      reasons.push('insufficient FAST-170 bankroll at landing');
+    }
+    const dumpMetrics = this.dumpMetrics(candidate, event.receivedAtMs);
+    reasons.push(...dumpMetrics.reasons);
+    const competition = this.competitionStats(candidate, event.receivedSequence);
+    if (!candidate.fastPathDiagnostic) this.captureFastPathDiagnostic(candidate, event);
+    if (reasons.length) return this.skipLatencyCandidate(candidate, reasons.join('; '), { dumpMetrics, competition });
+    let position;
+    try {
+      position = this.createPosition(candidate, event, this.latencyAccount.positionSizeSol, this.latencyAccount.name, {
+        entryTargetMs: this.latencyAccount.entryTargetMs,
+        exitTargetMs: this.latencyAccount.exitTargetMs,
+        executionModel: this.latencyAccount.name,
+        competition,
+        dumpMetrics,
+        fastPathDiagnostic: candidate.fastPathDiagnostic,
+      });
+    } catch (error) {
+      return this.skipLatencyCandidate(candidate, `FAST-170 authoritative quote failed: ${error.message}`, { dumpMetrics, competition });
+    }
+    candidate.fastPathComplete = true;
+    this.latencyState.availableBankrollSol -= position.sizeSol + this.config.fixedCostPerTransactionSol;
+    this.latencyState.openPositions[candidate.pool] = position;
+    this.latencyState.entered += 1;
+    await appendJsonl(path.join(this.paperRoot, 'latency-account-entries.jsonl'), position);
+    await this.persistLatency();
+    void postDiscord('paperTrades', {
+      title: `${this.latencyAccount.name} PAPER ENTRY: ${candidate.symbol ?? candidate.mint.slice(0, 8)}`,
+      description: `Independent ${this.latencyAccount.entryTargetMs}ms-target account entered at the first authoritative state observable after its target.`,
+      color: 0x9b7cff,
+      fields: [
+        { name: 'Size', value: formatSol(position.sizeSol), inline: true },
+        { name: 'Average fill MC', value: formatMarketCap(position.entryMarketCapUsd, position.entryMarketCapSol), inline: true },
+        { name: 'Target → observed', value: `${position.modeledEntryTargetMs}ms → ${position.simulatedLandingDelayMs}ms`, inline: true },
+        { name: 'Observed ahead', value: formatCompetition(position.competitionBeforeEntry) },
+        { name: 'Account bankroll', value: formatSol(this.latencyState.availableBankrollSol), inline: true },
+        { name: 'Mint', value: `\`${candidate.mint}\`` },
+      ],
+    }).catch((error) => this.options.onError?.(error));
   }
 
   async executeCandidate(candidate, event) {
@@ -547,6 +642,18 @@ export class PaperEngine {
     if (reason) await this.beginShadowExit(cohort, position, atMs, reason, source, mark);
   }
 
+  async evaluateLatency(position, atMs, source) {
+    if (position.closing || position.pendingExit) return;
+    let mark;
+    try { mark = this.mark(position); } catch { return; }
+    const ageSeconds = (atMs - position.entryAtMs) / 1_000;
+    let reason = null;
+    if (mark.returnPct >= this.config.takeProfitPct) reason = 'TAKE_PROFIT';
+    else if (mark.returnPct <= -this.config.stopLossPct) reason = 'STOP_LOSS';
+    else if (ageSeconds >= this.config.timeoutSeconds) reason = 'TIMEOUT';
+    if (reason) await this.beginLatencyExit(position, atMs, reason, source, mark);
+  }
+
   pendingExit(reason, source, atMs, position, mark) {
     return {
       reason,
@@ -555,7 +662,7 @@ export class PaperEngine {
       triggerIso: new Date(atMs).toISOString(),
       triggerReceivedSequence: position.marketState.sourceReceivedSequence ?? position.entryReceivedSequence,
       triggerReturnPct: round(mark.returnPct, 3),
-      landingTargetAtMs: atMs + this.config.execution.simulatedExitLandingDelayMs,
+      landingTargetAtMs: atMs + (position.modeledExitTargetMs ?? this.config.execution.simulatedExitLandingDelayMs),
       competition: {
         observedEvents: 0, observedBuys: 0, observedSells: 0,
         buySol: 0, sellSol: 0, largestBuySol: 0, largestSellSol: 0,
@@ -577,6 +684,13 @@ export class PaperEngine {
     setTimeout(() => this.finalizeShadowExit(cohort.sizeSol, position.pool, position.id).catch((error) => this.options.onError?.(error)), delay).unref();
   }
 
+  async beginLatencyExit(position, atMs, reason, source, mark) {
+    position.pendingExit = this.pendingExit(reason, source, atMs, position, mark);
+    await this.persistLatency();
+    const delay = Math.max(0, position.pendingExit.landingTargetAtMs - Date.now());
+    setTimeout(() => this.finalizeLatencyExit(position.pool, position.id).catch((error) => this.options.onError?.(error)), delay).unref();
+  }
+
   async finalizeExit(pool, id) {
     const position = this.state.openPositions[pool];
     if (!position || position.id !== id || !position.pendingExit) return;
@@ -590,6 +704,13 @@ export class PaperEngine {
     if (!position || position.id !== id || !position.pendingExit) return;
     const mark = this.mark(position);
     await this.closeShadowPosition(cohort, position, Date.now(), position.pendingExit.reason, 'modeled-exit-landing', mark);
+  }
+
+  async finalizeLatencyExit(pool, id) {
+    const position = this.latencyState.openPositions[pool];
+    if (!position || position.id !== id || !position.pendingExit) return;
+    const mark = this.mark(position);
+    await this.closeLatencyPosition(position, Date.now(), position.pendingExit.reason, 'modeled-fast-exit-landing', mark);
   }
 
   resultFrom(position, atMs, reason, source, mark) {
@@ -678,7 +799,7 @@ export class PaperEngine {
         { name: 'Top wallets buying ahead', value: formatTopWallets(position.competitionBeforeEntry?.topObservedBuyers) },
         { name: 'Competition before exit', value: formatCompetition(result.competitionBeforeExit) },
         { name: 'Dump guard at entry', value: `${position.dumpMetricsAtEntry?.peakDrawdownPct?.toFixed?.(1) ?? '0.0'}% off observed peak · ${Number(position.dumpMetricsAtEntry?.sellSol ?? 0).toFixed(3)} SOL sold in ${position.dumpMetricsAtEntry?.windowMs ?? 1000}ms` },
-        { name: '170ms diagnostic', value: `${formatMarketCap(position.fastPathDiagnostic?.averageFillMarketCapUsd, position.fastPathDiagnostic?.averageFillMarketCapSol)} observed after ${position.fastPathDiagnostic?.observedDelayMs ?? '?'}ms; diagnostic only` },
+        { name: 'FAST-170 observed entry state', value: `${formatMarketCap(position.fastPathDiagnostic?.averageFillMarketCapUsd, position.fastPathDiagnostic?.averageFillMarketCapSol)} observed after ${position.fastPathDiagnostic?.observedDelayMs ?? '?'}ms; matched account tracked separately` },
         { name: 'MC method', value: Number.isFinite(position.solUsdAtEntry) && Number.isFinite(result.solUsdAtExit)
           ? `Average executable fill × supply · SOL/USD entry $${Number(position.solUsdAtEntry).toFixed(2)}, exit $${Number(result.solUsdAtExit).toFixed(2)}`
           : 'Average executable fill × supply (SOL-denominated; USD conversion unavailable)' },
@@ -710,10 +831,59 @@ export class PaperEngine {
     }).catch((error) => this.options.onError?.(error));
   }
 
+  async closeLatencyPosition(position, atMs, reason, source, mark = this.mark(position)) {
+    position.closing = true;
+    this.latencyState.availableBankrollSol += mark.proceeds - this.config.fixedCostPerTransactionSol;
+    this.latencyState.realizedPnlSol += mark.pnlSol;
+    this.latencyState.completedTrades += 1;
+    this.latencyState[mark.pnlSol > 0 ? 'wins' : 'losses'] += 1;
+    delete this.latencyState.openPositions[position.pool];
+    const result = {
+      ...this.resultFrom(position, atMs, reason, source, mark),
+      accountBankrollSol: round(this.latencyState.availableBankrollSol),
+      accountRealizedPnlSol: round(this.latencyState.realizedPnlSol),
+    };
+    await appendJsonl(path.join(this.paperRoot, 'latency-account-exits.jsonl'), result);
+    await this.persistLatency();
+    const won = result.pnlSol > 0;
+    void postDiscord('pnl', {
+      title: `${this.latencyAccount.name} PNL`,
+      description: `${position.symbol ?? position.mint.slice(0, 8)} closed · ${reason}`,
+      color: won ? 0x45e6b0 : 0xff5d73,
+      fields: [
+        { name: 'Trade PnL', value: `${result.pnlSol >= 0 ? '+' : ''}${formatSol(result.pnlSol)}`, inline: true },
+        { name: 'Cumulative PnL', value: `${this.latencyState.realizedPnlSol >= 0 ? '+' : ''}${formatSol(this.latencyState.realizedPnlSol)}`, inline: true },
+        { name: 'Entry → Exit MC', value: `${formatMarketCap(position.entryMarketCapUsd, position.entryMarketCapSol)} → ${formatMarketCap(result.exitMarketCapUsd, result.exitMarketCapSol)}` },
+        { name: 'Entry target → observed', value: `${position.modeledEntryTargetMs}ms → ${position.simulatedLandingDelayMs}ms`, inline: true },
+        { name: 'Exit target → observed', value: `${position.modeledExitTargetMs}ms → ${result.simulatedExitLandingDelayMs}ms`, inline: true },
+        { name: 'Record', value: `${this.latencyState.wins}W · ${this.latencyState.losses}L`, inline: true },
+      ],
+    }).catch((error) => this.options.onError?.(error));
+    void postDiscord('caseStudies', {
+      threadName: `${position.symbol ?? position.mint.slice(0, 8)} · ${this.latencyAccount.name} · ${result.exitIso.slice(11, 19)}`,
+      title: `${position.name ?? position.symbol ?? 'Token'} ${this.latencyAccount.name} case study`,
+      description: `Independent ${position.modeledEntryTargetMs}ms entry / ${position.modeledExitTargetMs}ms exit account.`,
+      color: won ? 0x45e6b0 : 0xff5d73,
+      fields: [
+        { name: 'Mint', value: `\`${position.mint}\`` },
+        { name: 'Entry average-fill MC', value: formatMarketCap(position.entryMarketCapUsd, position.entryMarketCapSol), inline: true },
+        { name: 'Exit average-fill MC', value: formatMarketCap(result.exitMarketCapUsd, result.exitMarketCapSol), inline: true },
+        { name: 'Outcome', value: `${result.pnlSol >= 0 ? '+' : ''}${result.pnlSol.toFixed(4)} SOL (${result.returnPct.toFixed(2)}%)` },
+        { name: 'Signal → entry', value: `${new Date(position.submittedAtMs).toISOString()} → ${position.entryIso}\nTarget ${position.modeledEntryTargetMs}ms · observed ${position.simulatedLandingDelayMs}ms` },
+        { name: 'Exit trigger → fill', value: `${result.exitTriggeredIso} → ${result.exitIso}\nTarget ${position.modeledExitTargetMs}ms · observed ${result.simulatedExitLandingDelayMs}ms` },
+        { name: 'Competition before entry', value: formatCompetition(position.competitionBeforeEntry) },
+        { name: 'Top wallets buying ahead', value: formatTopWallets(position.competitionBeforeEntry?.topObservedBuyers) },
+        { name: 'Competition before exit', value: formatCompetition(result.competitionBeforeExit) },
+        { name: 'Method version', value: this.config.version },
+      ],
+    }).catch((error) => this.options.onError?.(error));
+  }
+
   async tick() {
     const now = Date.now();
     for (const position of Object.values(this.state.openPositions)) await this.evaluate(position, now, 'clock');
     for (const cohort of this.shadowCohorts()) for (const position of Object.values(cohort.openPositions)) await this.evaluateShadow(cohort, position, now, 'clock');
+    for (const position of Object.values(this.latencyState.openPositions)) await this.evaluateLatency(position, now, 'clock');
     const date = new Date().toISOString().slice(0, 10);
     if (new Date().getUTCHours() === 0 && this.lastDailyReportDate !== date) {
       this.lastDailyReportDate = date;
@@ -737,6 +907,7 @@ export class PaperEngine {
         { name: 'Open positions', value: String(Object.keys(this.state.openPositions).length), inline: true },
         { name: 'Completed', value: String(completed), inline: true }, { name: 'Win rate', value: `${winRate.toFixed(1)}%`, inline: true },
         { name: 'Signals', value: `${this.state.entered} filled · ${this.state.skipped} skipped/unfilled` }, ...shadowFields,
+        { name: `${this.latencyAccount?.name ?? 'FAST'} account`, value: `${this.latencyState.completedTrades} closed · ${this.latencyState.realizedPnlSol >= 0 ? '+' : ''}${this.latencyState.realizedPnlSol.toFixed(4)} SOL · ${Object.keys(this.latencyState.openPositions).length} open` },
       ],
     });
   }
@@ -747,6 +918,11 @@ export class PaperEngine {
       realizedPnlSol: round(this.state.realizedPnlSol), openPositions: Object.keys(this.state.openPositions).length,
       completedTrades: this.state.completedTrades, decisions: this.state.decisions, invalidatedTrades: this.state.invalidatedTrades,
       solUsd: this.solUsd,
+      latencyAccount: {
+        name: this.latencyAccount?.name ?? 'FAST', bankrollSol: round(this.latencyState.availableBankrollSol),
+        realizedPnlSol: round(this.latencyState.realizedPnlSol), openPositions: Object.keys(this.latencyState.openPositions).length,
+        completedTrades: this.latencyState.completedTrades, matchedSignals: this.latencyState.matchedSignals,
+      },
       sizeShadows: this.shadowCohorts().map((cohort) => ({
         sizeSol: cohort.sizeSol, realizedPnlSol: round(cohort.realizedPnlSol),
         openPositions: Object.keys(cohort.openPositions).length, completedTrades: cohort.completedTrades,
@@ -782,6 +958,19 @@ export class PaperEngine {
       }
     }
     if (count) await this.persistShadows();
+  }
+
+  async invalidateLatencyOpenPositions(reason) {
+    const positions = Object.values(this.latencyState.openPositions);
+    for (const position of positions) {
+      this.latencyState.availableBankrollSol += position.sizeSol + this.config.fixedCostPerTransactionSol;
+      this.latencyState.invalidatedTrades += 1;
+      await appendJsonl(path.join(this.paperRoot, 'latency-account-invalidated.jsonl'), {
+        ...position, marketState: undefined, status: 'INVALIDATED', invalidatedAt: Date.now(), reason,
+      });
+      delete this.latencyState.openPositions[position.pool];
+    }
+    if (positions.length) await this.persistLatency();
   }
 
   stop() { clearInterval(this.timer); clearInterval(this.priceTimer); }

@@ -4,7 +4,12 @@ An append-only research harness for discovering and forward-testing Solana memec
 
 ## Current phase
 
-`paper-v3.1-latency-competition-guard` is the active frozen forward hypothesis. A live Solana WebSocket watches Pump migrations and PumpSwap events, records every decision, and maintains a fresh 3 SOL paper account under `data/paper-v3-1/`.
+`paper-v4-matched-latency-accounts` is the active frozen forward hypothesis. A live Solana WebSocket watches Pump migrations and PumpSwap events, records every decision, and maintains two independent 3 SOL paper accounts under `data/paper-v4/`.
+
+- `FAST-170`: 0.5 SOL positions targeting 170ms entry and exit.
+- `SAFE-1000`: 0.5 SOL positions targeting 1,000ms entry and exit, plus the existing 1.0/1.5/2.0 SOL size shadows.
+
+Both accounts receive the same qualified signals. Each pays its own impact, dynamic fees and fixed costs and exits independently. A target is never treated as an achieved fill: each record stores the first authoritative state actually observable after the target and reports target versus observed latency.
 
 The official baseline remains fixed at 0.5 SOL. Every baseline entry also starts matched 1.0, 1.5 and 2.0 SOL size shadows from the identical confirmed post-delay pool state. Each shadow pays its own modeled price impact and exits independently at its own take-profit, stop-loss or timeout. These are unconstrained comparison cohorts—not recommendations to fund those sizes from the 3 SOL baseline wallet.
 
@@ -12,9 +17,9 @@ Agreed experimental account:
 
 - starting bankroll: 3 SOL
 - proposed position size: 0.5 SOL
-- official modeled entry and exit landing delay: 1 second
+- SAFE-1000 modeled entry and exit target: 1 second
 - opening signal window: 1 second (not the retired five-second wait)
-- 170ms fast-path quote: diagnostic only, never credited to official PnL
+- FAST-170 modeled entry and exit target: 170ms, with its own complete PnL account
 - initial exit family: +50% take-profit / −20% stop / 300-second timeout
 - pool impact, platform/pool fees, fixed transaction costs, failed entries and failed exits must be charged
 
@@ -22,7 +27,7 @@ Those exit values are hypotheses, not a live recommendation. Paper entries wait 
 
 The dump guard rejects an entry when the token is at least 20% below its observed post-migration peak with net selling, or when the latest 1,000ms contains at least 0.5 SOL of sells at a 2:1 or worse sell-to-buy ratio. These thresholds are a frozen hypothesis and must be evaluated rather than assumed optimal.
 
-`paper-v1-canonical-migrations` is retired. Its single blocking event queue, stale reconstructed reserve path and fixed-fee CPMM could credit same-second flow that occurred before a realistically executable entry. Its 19 historical closes and headline PnL are invalid research artifacts. V2 was a zero-trade transitional run and is superseded by v3. See [the model audit](docs/model-audit-2026-08-28.md).
+`paper-v1-canonical-migrations` is retired. Its single blocking event queue, stale reconstructed reserve path and fixed-fee CPMM could credit same-second flow that occurred before a realistically executable entry. Its 19 historical closes and headline PnL are invalid research artifacts. V2 was a zero-trade transitional run. V3.1 remains preserved with its first valid SAFE-1000 trade but is superseded by the clean matched v4 comparison. See [the model audit](docs/model-audit-2026-08-28.md).
 
 ## Run it
 
@@ -34,6 +39,7 @@ npm test
 npm run capture
 npm run report
 npm run paper:shadow-report
+npm run paper:latency-report
 ```
 
 For continuous collection:
@@ -68,10 +74,11 @@ The monitor posts startup/shutdown/heartbeat status, exact migration events, eve
 - `data/events/first-seen-pools.jsonl` — one immutable first observation per pool
 - `data/events/canonical-migrations.jsonl` — first observations confirmed by Pump as the canonical migrated pool
 - `data/state.json` — deduplication state; deleting this starts a new corpus
-- `data/paper-v3-1/state.json` — current authoritative baseline paper account
-- `data/paper-v3-1/entries.jsonl` / `exits.jsonl` — append-only baseline fills with timing, competition and market-cap evidence
-- `data/paper-v3-1/size-shadow-state.json` — current matched size-cohort totals and open positions
-- `data/paper-v3-1/size-shadow-entries.jsonl` / `size-shadow-exits.jsonl` — append-only independent paths for the 1.0, 1.5 and 2.0 SOL cohorts
+- `data/paper-v4/state.json` — SAFE-1000 baseline account
+- `data/paper-v4/latency-account-state.json` — FAST-170 account
+- `data/paper-v4/latency-account-entries.jsonl` / `latency-account-exits.jsonl` — complete FAST-170 fills and outcomes
+- `data/paper-v4/entries.jsonl` / `exits.jsonl` — SAFE-1000 fills and outcomes
+- `data/paper-v4/size-shadow-state.json` — current matched size-cohort totals and open positions
 
 ## Research tracks
 

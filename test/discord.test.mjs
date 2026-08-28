@@ -28,11 +28,13 @@ test('configuration reports missing secrets without exposing them', () => {
   assert.equal(JSON.stringify(configuration).includes('/api/webhooks/'), false);
 });
 
-test('PnL notifications are close-only for baseline and size shadows', async () => {
+test('PnL notifications are close-only for SAFE-1000, size shadows and FAST-170', async () => {
   const source = await fs.readFile(new URL('../src/paper-engine.mjs', import.meta.url), 'utf8');
+  const fastOpenSection = source.slice(source.indexOf('async executeLatencyCandidate'), source.indexOf('async executeCandidate'));
   const openSection = source.slice(source.indexOf('async executeCandidate'), source.indexOf('mark(position)'));
+  assert.equal(fastOpenSection.includes("postDiscord('pnl'"), false);
   assert.equal(openSection.includes("postDiscord('pnl'"), false);
-  assert.equal(source.match(/postDiscord\('pnl'/g)?.length, 2);
+  assert.equal(source.match(/postDiscord\('pnl'/g)?.length, 3);
 });
 
 test('closed-trade case studies expose auditable entry and exit market caps', async () => {

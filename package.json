@@ -13,6 +13,7 @@
     "paper:reconcile": "node --env-file=.env src/reconcile-paper.mjs",
     "paper:size-sweep:legacy": "node --env-file=.env src/analyze-size-sweep.mjs",
     "paper:shadow-report": "node --env-file=.env src/report-size-shadows.mjs",
+    "paper:latency-report": "node --env-file=.env src/report-latency-account.mjs",
     "test": "node --test"
   },
   "engines": {

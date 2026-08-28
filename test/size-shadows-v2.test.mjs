@@ -5,7 +5,7 @@ import path from 'node:path';
 import test from 'node:test';
 import { PaperEngine } from '../src/paper-engine.mjs';
 
-const config = JSON.parse(await fs.readFile(new URL('../config/paper.v3.json', import.meta.url), 'utf8'));
+const config = JSON.parse(await fs.readFile(new URL('../config/paper.v4.json', import.meta.url), 'utf8'));
 
 test('authoritative baseline and size shadows enter the identical confirmed state', async () => {
   const dataRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'axiom-size-shadows-v2-'));
@@ -23,6 +23,11 @@ test('authoritative baseline and size shadows enter the identical confirmed stat
     cohorts: Object.fromEntries(engine.shadowSizes.map((sizeSol) => [String(sizeSol), {
       sizeSol, realizedPnlSol: 0, completedTrades: 0, wins: 0, losses: 0, invalidatedTrades: 0, openPositions: {},
     }])),
+  };
+  engine.latencyState = {
+    version: `${config.version}-FAST-170`, startedAt: Date.now(), startingBankrollSol: 3,
+    availableBankrollSol: 3, realizedPnlSol: 0, openPositions: {}, matchedSignals: 1,
+    entered: 0, skipped: 0, completedTrades: 0, wins: 0, losses: 0, invalidatedTrades: 0,
   };
   const state = {
     baseReserveRaw: '190000000000000', quoteReserveRaw: '75000000000', virtualQuoteReservesRaw: '17500000000',
@@ -45,6 +50,13 @@ test('authoritative baseline and size shadows enter the identical confirmed stat
   engine.candidates.set(candidate.pool, candidate);
 
   try {
+    await engine.executeLatencyCandidate(candidate, event);
+    const fast = engine.latencyState.openPositions['pool-one'];
+    assert.equal(fast.executionModel, 'FAST-170');
+    assert.equal(fast.modeledEntryTargetMs, 170);
+    assert.equal(fast.modeledExitTargetMs, 170);
+    assert.equal(fast.simulatedLandingDelayMs, 1_500);
+
     await engine.executeCandidate(candidate, event);
     const baseline = engine.state.openPositions['pool-one'];
     assert.equal(baseline.sizeSol, 0.5);
@@ -70,6 +82,19 @@ test('authoritative baseline and size shadows enter the identical confirmed stat
     assert.ok(engine.state.openPositions['pool-one']);
     await engine.finalizeExit('pool-one', baseline.id);
     assert.equal(engine.state.openPositions['pool-one'], undefined);
+
+    fast.marketState = {
+      ...fast.marketState,
+      quoteReserveRaw: '200000000000',
+      sourceTimestamp: 101,
+      sourceReceivedAtMs: 11_000,
+      sourceReceivedSequence: 6,
+    };
+    await engine.evaluateLatency(fast, 11_000, 'swap');
+    assert.equal(fast.pendingExit.landingTargetAtMs, 11_170);
+    await engine.finalizeLatencyExit('pool-one', fast.id);
+    assert.equal(engine.latencyState.openPositions['pool-one'], undefined);
+    assert.equal(engine.latencyState.completedTrades, 1);
   } finally {
     if (previousDataRoot == null) delete process.env.DATA_ROOT;
     else process.env.DATA_ROOT = previousDataRoot;

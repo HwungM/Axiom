@@ -37,6 +37,7 @@ const chain = new LiveChain({
     if (event.type === 'disconnected') {
       void paper.invalidateOpenPositions('SOLANA_WEBSOCKET_DATA_GAP').catch((error) => console.error(error));
       void paper.invalidateShadowOpenPositions('SOLANA_WEBSOCKET_DATA_GAP').catch((error) => console.error(error));
+      void paper.invalidateLatencyOpenPositions('SOLANA_WEBSOCKET_DATA_GAP').catch((error) => console.error(error));
     }
   },
 });

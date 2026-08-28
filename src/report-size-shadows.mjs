@@ -3,7 +3,7 @@ import path from 'node:path';
 import { readJson } from './lib/fs-store.mjs';
 
 const dataRoot = path.resolve(process.env.DATA_ROOT ?? 'data');
-const config = JSON.parse(await fs.readFile(path.resolve(process.env.PAPER_CONFIG ?? 'config/paper.v3.json'), 'utf8'));
+const config = JSON.parse(await fs.readFile(path.resolve(process.env.PAPER_CONFIG ?? 'config/paper.v4.json'), 'utf8'));
 const paperRoot = path.join(dataRoot, config.dataDirectory ?? 'paper');
 const state = await readJson(path.join(paperRoot, 'size-shadow-state.json'), null);
 

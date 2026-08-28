@@ -47,6 +47,10 @@ V3 also adds a frozen active-dump guard. It rejects entries with severe peak dra
 
 V3.1 starts in a separate clean data directory after a startup bug in the candidate market-cap observation path caused swap-handler errors. No v3 entries or exits occurred; its single skip decision is excluded from v3.1.
 
+## v4 matched latency accounts
+
+V4 replaces the entry-only 170ms diagnostic with a complete independent FAST-170 paper account. FAST-170 and SAFE-1000 start with 3 SOL each, take 0.5 SOL positions on the same qualified future signals, pay their own impact and costs, apply 170ms versus 1,000ms targets to both entry and exit, and maintain separate realized PnL. The first authoritative event observable after each target determines the modeled fill; if the feed arrives after 170ms, the record reports the slower observed delay rather than pretending the target was achieved.
+
 ## Authoritative reference
 
 Pump's official PumpSwap documentation describes effective quote reserves as raw quote reserves plus virtual quote reserves and exposes the current event and fee fields used by v2:
