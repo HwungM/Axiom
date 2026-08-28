@@ -1,6 +1,6 @@
 {
-  "version": "paper-v3-latency-competition-guard",
-  "dataDirectory": "paper-v3",
+  "version": "paper-v3.1-latency-competition-guard",
+  "dataDirectory": "paper-v3-1",
   "enabled": true,
   "frozen": true,
   "startingBankrollSol": 3,

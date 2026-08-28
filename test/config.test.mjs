@@ -29,7 +29,7 @@ test('paper v3 is enabled with the frozen first forward selector', () => {
   assert.equal(livePaperConfig.execution.simulatedExitLandingDelayMs, 1000);
   assert.equal(livePaperConfig.execution.fastPathDiagnosticMs, 170);
   assert.equal(livePaperConfig.dumpGuard.enabled, true);
-  assert.equal(livePaperConfig.dataDirectory, 'paper-v3');
+  assert.equal(livePaperConfig.dataDirectory, 'paper-v3-1');
 });
 
 test('paper v3 preserves the 0.5 SOL baseline and declares matched size shadows', () => {

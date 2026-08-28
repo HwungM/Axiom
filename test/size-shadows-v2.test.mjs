@@ -94,3 +94,25 @@ test('dump guard detects one-second migration sell pressure', () => {
   assert.equal(metrics.sellSol, 0.6);
   assert.ok(metrics.reasons.length >= 1);
 });
+
+test('candidate observation calculates spot market cap without shadowing the quote helper', () => {
+  const engine = new PaperEngine(config);
+  const candidate = {
+    migrationTime: 100,
+    totalSupplyRaw: '1000000000000000',
+    events: [], droppedEvents: 0, buyers: new Set(), openingBuysSol: 0, openingSellsSol: 0,
+    largestOpeningSwapSol: 0, peakSpotMarketCapSol: null, currentSpotMarketCapSol: null,
+  };
+  engine.observeCandidate(candidate, {
+    side: 'buy', timestamp: 100, receivedAtMs: 100_500, receivedSequence: 1,
+    signature: 'observation', slot: 1, pool: 'pool', user: 'buyer',
+    baseAmountRaw: '1000000000', baseReserveRaw: '190000000000000',
+    quoteReserveRaw: '75000000000', quoteReserveDeltaRaw: '100000000',
+    userQuoteAmountRaw: '101000000', virtualQuoteReservesRaw: '17500000000',
+    baseSupplyRaw: '1000000000000000', lpFeeBasisPoints: 20, protocolFeeBasisPoints: 5,
+    coinCreatorFeeBasisPoints: 0, cashbackFeeBasisPoints: 95,
+  });
+
+  assert.ok(candidate.currentSpotMarketCapSol > 0);
+  assert.equal(candidate.peakSpotMarketCapSol, candidate.currentSpotMarketCapSol);
+});

@@ -4,7 +4,7 @@ An append-only research harness for discovering and forward-testing Solana memec
 
 ## Current phase
 
-`paper-v3-latency-competition-guard` is the active frozen forward hypothesis. A live Solana WebSocket watches Pump migrations and PumpSwap events, records every decision, and maintains a fresh 3 SOL paper account under `data/paper-v3/`.
+`paper-v3.1-latency-competition-guard` is the active frozen forward hypothesis. A live Solana WebSocket watches Pump migrations and PumpSwap events, records every decision, and maintains a fresh 3 SOL paper account under `data/paper-v3-1/`.
 
 The official baseline remains fixed at 0.5 SOL. Every baseline entry also starts matched 1.0, 1.5 and 2.0 SOL size shadows from the identical confirmed post-delay pool state. Each shadow pays its own modeled price impact and exits independently at its own take-profit, stop-loss or timeout. These are unconstrained comparison cohorts—not recommendations to fund those sizes from the 3 SOL baseline wallet.
 
@@ -68,10 +68,10 @@ The monitor posts startup/shutdown/heartbeat status, exact migration events, eve
 - `data/events/first-seen-pools.jsonl` — one immutable first observation per pool
 - `data/events/canonical-migrations.jsonl` — first observations confirmed by Pump as the canonical migrated pool
 - `data/state.json` — deduplication state; deleting this starts a new corpus
-- `data/paper-v3/state.json` — current authoritative baseline paper account
-- `data/paper-v3/entries.jsonl` / `exits.jsonl` — append-only baseline fills with timing, competition and market-cap evidence
-- `data/paper-v3/size-shadow-state.json` — current matched size-cohort totals and open positions
-- `data/paper-v3/size-shadow-entries.jsonl` / `size-shadow-exits.jsonl` — append-only independent paths for the 1.0, 1.5 and 2.0 SOL cohorts
+- `data/paper-v3-1/state.json` — current authoritative baseline paper account
+- `data/paper-v3-1/entries.jsonl` / `exits.jsonl` — append-only baseline fills with timing, competition and market-cap evidence
+- `data/paper-v3-1/size-shadow-state.json` — current matched size-cohort totals and open positions
+- `data/paper-v3-1/size-shadow-entries.jsonl` / `size-shadow-exits.jsonl` — append-only independent paths for the 1.0, 1.5 and 2.0 SOL cohorts
 
 ## Research tracks
 

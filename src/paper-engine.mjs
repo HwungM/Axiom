@@ -172,12 +172,12 @@ export class PaperEngine {
     }
     candidate.actualState = marketStateAfterEvent(event, candidate.totalSupplyRaw);
     candidate.latestEvent = event;
-    const spotMarketCapSol = spotMarketCapSol(candidate.actualState);
-    if (event.timestamp >= candidate.migrationTime && Number.isFinite(spotMarketCapSol)) {
-      candidate.currentSpotMarketCapSol = spotMarketCapSol;
-      candidate.peakSpotMarketCapSol = Math.max(candidate.peakSpotMarketCapSol ?? spotMarketCapSol, spotMarketCapSol);
+    const observedSpotMarketCapSol = spotMarketCapSol(candidate.actualState);
+    if (event.timestamp >= candidate.migrationTime && Number.isFinite(observedSpotMarketCapSol)) {
+      candidate.currentSpotMarketCapSol = observedSpotMarketCapSol;
+      candidate.peakSpotMarketCapSol = Math.max(candidate.peakSpotMarketCapSol ?? observedSpotMarketCapSol, observedSpotMarketCapSol);
       candidate.currentDrawdownPct = candidate.peakSpotMarketCapSol > 0
-        ? 100 * (candidate.peakSpotMarketCapSol - spotMarketCapSol) / candidate.peakSpotMarketCapSol : 0;
+        ? 100 * (candidate.peakSpotMarketCapSol - observedSpotMarketCapSol) / candidate.peakSpotMarketCapSol : 0;
     }
     if (event.timestamp < candidate.migrationTime) return;
     if (event.timestamp > candidate.migrationTime + this.config.observationWindowSeconds) return;
